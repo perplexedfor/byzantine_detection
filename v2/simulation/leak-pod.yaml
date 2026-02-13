@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-leak-simulation
+  labels:
+    app: memory-leak
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: kind-worker
+  containers:
+  - name: leaker
+    image: python:3.9-slim
+    command: ["python", "-c"]
+    args:
+    - |
+      import time
+      import os
+      data = []
+      print("Starting Slow Memory Leak...")
+      while True:
+          # Allocate 50MB every 5 seconds
+          data.append(' ' * 50 * 1024 * 1024)
+          print(f"Allocated {len(data)*50} MB")
+          time.sleep(5)
+  restartPolicy: Never
