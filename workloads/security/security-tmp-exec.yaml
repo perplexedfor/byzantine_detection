@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-tmp-exec
+  labels:
+    app: security-tmp-exec
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: security-tmp-exec
+  template:
+    metadata:
+      labels:
+        app: security-tmp-exec
+    spec:
+      containers:
+      - name: tmp-exec
+        image: alpine:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Simulating malicious execution from /tmp..."
+          while true; do
+            # Create a simple "malicious" script
+            echo '#!/bin/sh' > /tmp/bad_script.sh
+            echo 'echo "I am a bad script running from /tmp!"' >> /tmp/bad_script.sh
+            chmod +x /tmp/bad_script.sh
+            
+            # Execute it
+            /tmp/bad_script.sh
+            
+            sleep 5
+          done

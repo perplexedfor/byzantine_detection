@@ -1,0 +1,73 @@
+Test Baseline Isolation Forest Model
+====================================
+
+This guide provides detailed steps to train and test the baseline Isolation Forest model used for anomaly detection.
+
+Prerequisites
+-------------
+1.  **Python Environment**: Ensure Python is installed.
+2.  **Dependencies**: Install required libraries using pip:
+    
+    pip install pandas scikit-learn joblib numpy
+    
+
+Step 1: Verify Dataset
+----------------------
+Ensure the training dataset exists at the following path:
+    
+    infra-proj/dataset/production_baseline.csv
+    
+If it doesn't exist, you'll need to generate or place a CSV file there with the following columns:
+`cpu`, `mem`, `net_in`, `net_out`, `latency`.
+
+Step 2: Train the Model
+-----------------------
+Run the training script to generate the model and scaler files.
+
+1.  Navigate to the project root directory:
+    cd c:\Users\Asus\infra-proj
+    
+
+2.  Run the training script:
+    python ml/train_model.py
+    
+
+**Expected Output:**
+-   "Loading dataset..."
+-   "Training Isolation Forest..."
+-   Suggested Threshold value (e.g., -0.085)
+-   "Model saved to ..."
+
+Check that `ml/model.pkl` and `ml/scaler.pkl` are created.
+
+Step 3: Quick Test (Single Data Points)
+---------------------------------------
+Run the `anomaly_detector.py` script directly to test with hardcoded sample data (Normal, CPU Spike, Network Spike).
+
+1.  Run the detector script:
+    python ml/anomaly_detector.py
+    
+
+**Expected Output:**
+-   `NORMAL_TEST: Normal (...)`
+-   `CPU_SPIKE_TEST: Anomaly (...)`
+-   `NET_SPIKE_TEST: Anomaly (...)`
+
+Step 4: Batch Test (CSV File)
+-----------------------------
+To test against a file containing multiple data points:
+
+1.  Create a test CSV file (e.g., `test_data.csv`) or use an existing one.
+2.  Run the test script pointing to your CSV file:
+    python ml/test_file.py test_data.csv
+    
+
+3.  **Check Results**:
+    -   Console output will verify the run.
+    -   Open `test_results.txt` to see row-by-row classification.
+    -   Look for lines marked `<--- DETECTED` to see identified anomalies.
+
+Troubleshooting
+---------------
+-   **FileNotFoundError**: Ensure you are running commands from the `infra-proj` root directory so relative paths work correctly.
+-   **Threshold Tuning**: If the model is too sensitive, adjust the `threshold` default value in `ml/anomaly_detector.py` based on the "Suggested Threshold" printed during training.

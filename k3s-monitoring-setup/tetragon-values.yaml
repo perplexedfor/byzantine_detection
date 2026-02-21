@@ -1,0 +1,43 @@
+# tetragon-values.yaml
+# Basic configuration for Tetragon
+
+tetragon:
+  # Enable enrichment of process credentials and namespaces
+  enableProcessCred: true
+  enableProcessNs: true
+  
+  # Export logs to stdout so you can read them with kubectl logs easily
+  exportStdout: true
+
+  # Enable Prometheus metrics for Tetragon
+  prometheus:
+    enabled: true
+    # Provide an annotation so the kube-prometheus-stack we installed earlier can automatically discover and scrape Tetragon's metrics port
+    serviceMonitor:
+      enabled: true
+
+  # Configure which metrics to export
+  # These control what Tetragon components expose metrics
+  metrics:
+    enabled: true
+    # Tetragon internal health and processing metrics
+    resources: true
+    # Metrics related to eBPF hooks and event sizes
+    bpf: true
+    # Metrics related to enforcement actions
+    enforce: true
+    # Metrics related to the kernel/OS
+    kernel: true
+    
+  # Example of inline tracing policy (optional)
+  # You can apply TracingPolicies as CRDs later, but here is how you can pass them via Helm if needed
+  # inlineTracingPolicies:
+  #   - name: tcp-connect
+  #     description: "Trace TCP connections"
+  #     spec:
+  #       kprobes:
+  #       - call: "tcp_connect"
+  #         syscall: false
+  #         args:
+  #         - index: 0
+  #           type: "sock"

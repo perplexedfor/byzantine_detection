@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: background-logger
+spec:
+  schedule: "*/1 * * * *" # Run every minute
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: logger
+            image: busybox
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting background task..."
+              # Simulate some file operations
+              mkdir -p /tmp/work
+              for i in $(seq 1 100); do
+                echo "Log entry $i: $(date)" >> /tmp/work/dummy.log
+              done
+              # Simulate some processing
+              dd if=/dev/urandom of=/tmp/work/random.dat bs=1M count=5 2>/dev/null
+              gzip /tmp/work/random.dat
+              echo "Background task completed."
+          restartPolicy: OnFailure

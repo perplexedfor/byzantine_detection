@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-baseline
+  labels:
+    app: redis-baseline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-baseline
+  template:
+    metadata:
+      labels:
+        app: redis-baseline
+    spec:
+      containers:
+      - name: redis
+        image: redis:alpine
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-baseline-svc
+spec:
+  selector:
+    app: redis-baseline
+  ports:
+    - protocol: TCP
+      port: 6379
+      targetPort: 6379
+  type: ClusterIP

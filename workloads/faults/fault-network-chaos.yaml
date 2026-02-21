@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fault-network-chaos
+  labels:
+    app: fault-network-chaos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fault-network-chaos
+  template:
+    metadata:
+      labels:
+        app: fault-network-chaos
+    spec:
+      containers:
+      - name: network-chaos
+        image: alpine:latest
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN"] # Required for tc (traffic control)
+        command:
+        - /bin/sh
+        - -c
+        - |
+          apk add --no-cache iproute2
+          echo "Simulating 20% packet loss and 100ms delay..."
+          tc qdisc add dev eth0 root netem delay 100ms loss 20%
+          # Keep the pod running
+          tail -f /dev/null

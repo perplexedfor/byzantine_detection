@@ -1,0 +1,70 @@
+Byzantine / Anomalous Node Detection System - Implementation Plan
+Goal
+Build a multi-modal anomaly detection system for Kubernetes edge clusters combining Prometheus metrics and eBPF (Tetragon) telemetry.
+
+User Review Required
+IMPORTANT
+
+Docker Image Size Issue: The user reported that the operator image is too large (torch is heavy) and testing in-cluster is difficult. Solution: We will verify the operator logic by running it locally (outside the cluster) while connecting to the cluster via kubeconfig and port-forwarding Prometheus. This avoids the build/push cycle during development.
+
+Byzantine / Anomalous Node Detection System - Implementation Plan
+Goal
+Build a research-grade multi-modal anomaly detection system for Kubernetes edge clusters using a 3-node VM setup.
+
+User Review Required
+IMPORTANT
+
+Infrastructure Change: Moving from Kind/Local to 3 Ubuntu VMs (Master + 2 Workers) for realistic edge simulation. Data Strategy: Implementing a strict 5-step pipeline for dataset generation (Normal -> Faults -> Security -> Labeling -> Storage).
+
+Proposed Changes
+1. Infrastructure: 3-Node k3s Cluster (VMs)
+Setup:
+VM1 (Master): k3s Server (2GB RAM, 1-2 vCPU)
+VM2 (Worker): k3s Agent (2-3GB RAM, 1-2 vCPU)
+VM3 (Worker): k3s Agent (2-3GB RAM, 1-2 vCPU)
+Networking: Bridged or Host-only + NAT to allow inter-VM communication.
+Tools: VirtualBox or VMware Player.
+Verification: kubectl get nodes shows 3 ready nodes.
+2. Detailed Data Collection Pipeline (The Core)
+Step 1: Normal Activity (Baseline)
+Deploy realistic workloads to define "Normal":
+Web: Nginx deployment + Traffic Generator (hey, wrk, ab).
+Data: Redis instance.
+API: Small Node.js/Python API.
+Background: File upload simulation, periodic cronjobs, logging.
+Step 2: Controlled Faults (System Anomalies)
+Inject faults to create system-level deviations:
+Resource: CPU stress (stress-ng), Memory leak.
+Network: Packet loss/delay (
+tc
+), DNS failures.
+K8s: Pod crash loops, Node pressure/evictions.
+Step 3: Security Anomalies (eBPF Signals)
+Simulate malicious behavior caught by Tetragon:
+Execution: Binary/script execution from /tmp or /dev/shm.
+Process: Spawning high volume of processes, weird process names.
+Network: Outbound connections to suspicious ports (3333, 4444, mining ports), Reverse shell simulation.
+Step 4: Scenario-Based Labeling
+Methodology: Do not label manually. Use time-windows.
+Example:
+12:00-12:05: label="normal" (Run Nginx+Traffic)
+12:05-12:07: label="cpu_stress" (Run stress-ng)
+12:07-12:10: label="security_tmp_exec" (Run /tmp script)
+Implementation: A Python script (scenario_runner.py) will orchestrate workloads and log the exact timestamps for labeling.
+Step 5: Storage & Feature Engineering
+Aggregation Window: 10 seconds.
+Features (Per Node):
+Prometheus: avg_cpu, avg_mem, net_bytes_in/out.
+Tetragon: exec_count, unique_process_count, tmp_exec_count, outbound_connect_count, mining_port_count, syscall_feature_vector.
+Output: CSV / Parquet dataset + Raw JSON logs (optional).
+3. Operator & Logic
+Development: Continue to verify 
+main.py
+ locally against the VM cluster.
+Deployment: Once the model is trained on the new dataset, update 
+main.py
+ with the new feature extractor and deploy as an Operator.
+Verification Plan
+Cluster Connectivity: Verify kubectl on host machine can talk to the VM cluster.
+Tetragon Telemetry: Verify 3-node visibility of process executions.
+Dataset Integrity: Run a 15-minute pilot session and verify the CSV contains properly labeled normal vs anomalous rows.

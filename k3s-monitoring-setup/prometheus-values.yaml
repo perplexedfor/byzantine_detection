@@ -1,0 +1,29 @@
+# prometheus-values.yaml
+# K3s specific configurations for kube-prometheus-stack
+
+# K3s uses different labels and component architectures than standard Kubernetes.
+# Disabling these prevents Prometheus from throwing target down errors for components it can't scrape out of the box.
+kubeControllerManager:
+  enabled: false
+
+kubeEtcd:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Reduce retention for local VM to save disk space
+    retention: 5d
+    # Uncomment the below lines if you want to use PVC for persistent storage instead of emptyDir
+    # storageSpec:
+    #   volumeClaimTemplate:
+    #     spec:
+    #       accessModes: ["ReadWriteOnce"]
+    #       resources:
+    #         requests:
+    #           storage: 10Gi

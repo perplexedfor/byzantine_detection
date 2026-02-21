@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fault-crash-loop
+  labels:
+    app: fault-crash-loop
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: fault-crash-loop
+  template:
+    metadata:
+      labels:
+        app: fault-crash-loop
+    spec:
+      containers:
+      - name: crash-loop
+        image: busybox
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting normally, will crash in 5 seconds to simulate a crash loop..."
+          sleep 5
+          exit 1 # Crash the container

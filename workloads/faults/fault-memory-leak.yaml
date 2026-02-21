@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fault-memory-leak
+  labels:
+    app: fault-memory-leak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fault-memory-leak
+  template:
+    metadata:
+      labels:
+        app: fault-memory-leak
+    spec:
+      containers:
+      - name: memory-leak
+        image: python:3.9-slim
+        command:
+        - python
+        - -c
+        - |
+          import time
+          data = []
+          print("Starting memory leak simulation...")
+          while True:
+              # Allocate ~10MB every second
+              data.append(' ' * 10 * 1024 * 1024)
+              time.sleep(1)
+        resources:
+          limits:
+            memory: "500Mi" # Will cause OOMKilled evictions eventually

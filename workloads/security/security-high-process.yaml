@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-high-process
+  labels:
+    app: security-high-process
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: security-high-process
+  template:
+    metadata:
+      labels:
+        app: security-high-process
+    spec:
+      containers:
+      - name: process-spawner
+        image: busybox
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Simulating high volume of process spawning..."
+          while true; do
+            for i in $(seq 1 50); do
+              # Spawn short-lived strange-named processes
+              sh -c "sleep 0.1" -a "kthrotld" &
+            done
+            wait
+            sleep 2
+          done

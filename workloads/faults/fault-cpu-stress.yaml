@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fault-cpu-stress
+  labels:
+    app: fault-cpu-stress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fault-cpu-stress
+  template:
+    metadata:
+      labels:
+        app: fault-cpu-stress
+    spec:
+      containers:
+      - name: stress-ng
+        image: polinux/stress-ng
+        command:
+        - stress-ng
+        - --cpu
+        - "2"
+        - --cpu-load
+        - "80"
+        - --timeout
+        - "300s"
+      restartPolicy: Always

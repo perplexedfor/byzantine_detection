@@ -1,44 +1,44 @@
 Node            CPU    Score    Status
 ----------------------------------------
-kind-worker     1.6    0.133    Normal
-kind-worker     1.2    0.058    Anomaly <--- DETECTED
-kind-worker     1.2    0.094    Normal
-kind-worker     1.4    0.163    Normal
-kind-worker     1.2    0.108    Normal
-kind-worker     1.2    0.108    Normal
-kind-worker     1.1    0.078    Anomaly <--- DETECTED
-kind-worker     4.7    0.089    Normal
-kind-worker2    1.6    0.137    Normal
-kind-worker2    1.2    0.105    Normal
-kind-worker2    1.2    0.108    Normal
-kind-worker2    1.4    0.165    Normal
-kind-worker2    1.2    0.117    Normal
-kind-worker     7.6    0.030    Anomaly <--- DETECTED
-kind-worker     8.2    0.050    Anomaly <--- DETECTED
-kind-worker2    1.2    0.108    Normal
-kind-worker2    1.1    0.085    Normal
-kind-worker2    4.7    0.077    Anomaly <--- DETECTED
-kind-worker2    7.7    0.052    Anomaly <--- DETECTED
-kind-worker2    8.2    0.048    Anomaly <--- DETECTED
-kind-worker     8.3    0.079    Anomaly <--- DETECTED
-kind-worker2    8.3    0.093    Normal
-kind-worker     7.6    0.090    Normal
-kind-worker2    7.6    0.077    Anomaly <--- DETECTED
-kind-worker     7.7    0.093    Normal
-kind-worker2    7.8    0.079    Anomaly <--- DETECTED
-kind-worker2    4.8    0.084    Normal
-kind-worker     4.8    0.077    Anomaly <--- DETECTED
-kind-worker     1.3    0.139    Normal
-kind-worker2    1.3    0.139    Normal
-kind-worker2    1.2    0.091    Normal
-kind-worker     1.2    0.089    Normal
-kind-worker     1.4    0.170    Normal
-kind-worker2    1.4    0.157    Normal
-kind-worker     1.7    0.130    Normal
-kind-worker2    1.7    0.124    Normal
-kind-worker2    1.3    0.142    Normal
-kind-worker     1.3    0.151    Normal
-kind-worker2    1.3    0.150    Normal
+kind-worker     1.6    0.055    Normal
+kind-worker     1.2    0.010    Normal
+kind-worker     1.2    0.027    Normal
+kind-worker     1.4    0.059    Normal
+kind-worker     1.2    0.035    Normal
+kind-worker     1.2    0.039    Normal
+kind-worker     1.1    0.033    Normal
+kind-worker     4.7    -0.015   Normal
+kind-worker2    1.6    0.057    Normal
+kind-worker2    1.2    0.032    Normal
+kind-worker2    1.2    0.039    Normal
+kind-worker2    1.4    0.065    Normal
+kind-worker2    1.2    0.045    Normal
+kind-worker     7.6    -0.061   Normal
+kind-worker     8.2    -0.053   Normal
+kind-worker2    1.2    0.035    Normal
+kind-worker2    1.1    0.037    Normal
+kind-worker2    4.7    -0.019   Normal
+kind-worker2    7.7    -0.058   Normal
+kind-worker2    8.2    -0.053   Normal
+kind-worker     8.3    -0.015   Normal
+kind-worker2    8.3    -0.015   Normal
+kind-worker     7.6    -0.012   Normal
+kind-worker2    7.6    -0.018   Normal
+kind-worker     7.7    -0.012   Normal
+kind-worker2    7.8    -0.012   Normal
+kind-worker2    4.8    0.012    Normal
+kind-worker     4.8    0.010    Normal
+kind-worker     1.3    0.117    Normal
+kind-worker2    1.3    0.117    Normal
+kind-worker2    1.2    0.069    Normal
+kind-worker     1.2    0.069    Normal
+kind-worker     1.4    0.121    Normal
+kind-worker2    1.4    0.119    Normal
+kind-worker     1.7    0.108    Normal
+kind-worker2    1.7    0.104    Normal
+kind-worker2    1.3    0.120    Normal
+kind-worker     1.3    0.122    Normal
+kind-worker2    1.3    0.118    Normal
 ----------------------------------------
 Total Rows: 39
-Anomalies Detected: 11
+Anomalies Detected: 0
