@@ -11,19 +11,9 @@ OUTPUT_FILE = "final_labeled_dataset.csv"
 # We pad the start time to account for delayed effects (e.g. memory leak takes time to manifest)
 # We pad the end time to account for cluster recovery time
 START_PADDING_SEC = 10
-END_PADDING_SEC = 15
+END_PADDING_SEC = 25
 
-def parse_isoformat(timestamp_str):
-    """Parse ISO8601 timestamp string back to a datetime object."""
-    # Handle the 'Z' (UTC) suffix if present or microseconds
-    if timestamp_str.endswith('Z'):
-        timestamp_str = timestamp_str[:-1]
-    
-    # Split fractional seconds to parse main part, if there are fractional seconds
-    if '.' in timestamp_str:
-        return datetime.datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S.%f")
-    else:
-        return datetime.datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S")
+# Using pure epoch timestamps now instead of isoformats
 
 def main():
     print(f"Reading metrics from {METRICS_FILE}...")
@@ -76,9 +66,12 @@ def main():
         for row in reader:
             total_count += 1
             
-            # The timestamp in node_metrics.csv is isoformat
-            row_dt = parse_isoformat(row['timestamp'])
-            row_epoch = int(row_dt.timestamp())
+            # The timestamp in node_metrics.csv is now a pure epoch integer
+            try:
+                row_epoch = int(row['timestamp'])
+            except ValueError:
+                # Fallback if old data has strings
+                row_epoch = 0
             
             # Default label
             new_label = "normal"

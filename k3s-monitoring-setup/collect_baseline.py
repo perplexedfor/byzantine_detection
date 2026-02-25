@@ -6,12 +6,21 @@ import requests
 from datetime import datetime
 
 # Configuration
-PROMETHEUS_URL = "http://localhost:8080"
+PROMETHEUS_URL = "http://localhost:9090"
 TETRAGON_LOGS_CMD = [
-    "k3s", "kubectl", "logs", "-n", "kube-system", "-ds/tetragon", "-c", "export-stdout", "--tail=0", "-f"
+    "k3s", "kubectl", "logs", "-n", "kube-system", "ds/tetragon", "-c", "export-stdout", "--tail=0", "-f"
 ]
 OUTPUT_CSV = "node_metrics.csv"
 COLLECTION_INTERVAL_SEC = 10 # 10 second aggregation window
+
+# Map Prometheus node IPs to actual node names from Tetragon
+# Update this with your actual edge cluster IPs and hostnames if they differ
+IP_TO_NODE_MAP = {
+    "192.168.56.10": "k3s-wk1", # the server
+    "192.168.56.11": "sw-wk2", # worker 1
+    "192.168.56.12": "sw-wk3"  # worker 2
+}
+
 
 # State for Tetragon metrics per node
 # Structure: { "node_name": { "exec_count": 0, "unique_process_count": set(), "tmp_exec_count": 0, "outbound_connect_count": 0, "mining_port_count": 0, "syscalls": {} } }
@@ -33,9 +42,9 @@ def collect_prometheus_metrics():
     cpu_query = '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) by (instance)'
     # avg_mem: (total - available) / total
     mem_query = '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)'
-    # net_bytes_in/out: network receive/transmit bytes rate over 1m for eth0 (adjust interface if needed)
-    net_in_query = 'rate(node_network_receive_bytes_total{device="eth0"}[1m])'
-    net_out_query = 'rate(node_network_transmit_bytes_total{device="eth0"}[1m])'
+    # net_bytes_in/out: network receive/transmit bytes rate over 1m for enp0s3 (NAT interface)
+    net_in_query = 'rate(node_network_receive_bytes_total{device="enp0s3"}[1m])'
+    net_out_query = 'rate(node_network_transmit_bytes_total{device="enp0s3"}[1m])'
 
     return {
         'avg_cpu': get_prometheus_metric(cpu_query),
@@ -43,6 +52,22 @@ def collect_prometheus_metrics():
         'net_bytes_in': get_prometheus_metric(net_in_query),
         'net_bytes_out': get_prometheus_metric(net_out_query),
     }
+
+def map_prom_metrics_to_nodes(prom_metrics):
+    mapped_metrics = {
+        'avg_cpu': {},
+        'avg_mem': {},
+        'net_bytes_in': {},
+        'net_bytes_out': {}
+    }
+    
+    for metric_name, node_data in prom_metrics.items():
+        for ip, value in node_data.items():
+            # Apply mapping if IP is known, otherwise fallback to the IP string
+            node_name = IP_TO_NODE_MAP.get(ip, ip)
+            mapped_metrics[metric_name][node_name] = value
+
+    return mapped_metrics
 
 def process_tetragon_event(event_line):
     try:
@@ -136,22 +161,24 @@ def main():
                     else:
                         break
 
-                # Collect from Prometheus
-                prom_metrics = collect_prometheus_metrics()
+                # Collect from Prometheus and map IPs to Node names
+                raw_prom_metrics = collect_prometheus_metrics()
+                prom_metrics = map_prom_metrics_to_nodes(raw_prom_metrics)
                 
                 # Get all unique nodes we know about (from both sources)
                 all_nodes = set(list(tetragon_state.keys()))
                 for metric_dict in prom_metrics.values():
                     all_nodes.update(metric_dict.keys())
 
-                current_timestamp = datetime.now().isoformat()
+                # Use the exact same epoch timestamp format as the scenario_runner
+                current_timestamp = int(time.time())
                 
                 # Currently collecting 'normal' baseline behavior
                 current_label = "normal" 
 
                 # Write out row per node
                 for node in all_nodes:
-                    node_short = node # Prometheus often drops the domain, ensure matches
+                    node_short = node # Note: Prom metrics are already mapped to 'node' names now
 
                     t_state = tetragon_state.get(node, {})
                     
