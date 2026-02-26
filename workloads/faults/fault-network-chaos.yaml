@@ -25,7 +25,7 @@ spec:
         - -c
         - |
           apk add --no-cache iproute2
-          echo "Simulating 20% packet loss and 100ms delay..."
-          tc qdisc add dev eth0 root netem delay 100ms loss 20%
+          echo "Simulating {{LOSS}}% packet loss and {{DELAY}}ms delay..."
+          tc qdisc add dev enp0s3 root netem delay {{DELAY}}ms loss {{LOSS}}%
           # Keep the pod running
           tail -f /dev/null

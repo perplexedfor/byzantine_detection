@@ -20,9 +20,16 @@ spec:
         command:
         - stress-ng
         - --cpu
-        - "2"
+        - "{{CPU_WORKERS}}"
         - --cpu-load
-        - "80"
+        - "{{CPU_LOAD}}"
+        - --cpu-method
+        - "{{CPU_METHOD}}"
         - --timeout
-        - "300s"
+        - "{{DURATION}}"
       restartPolicy: Always
+      resources:
+        requests:
+          cpu: "500m"
+        limits:
+          cpu: "2"

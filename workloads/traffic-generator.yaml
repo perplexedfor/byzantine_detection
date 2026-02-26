@@ -5,7 +5,7 @@ metadata:
   labels:
     app: traffic-generator
 spec:
-  replicas: 1
+  replicas: 2   # better realism (traffic from multiple nodes)
   selector:
     matchLabels:
       app: traffic-generator
@@ -16,19 +16,41 @@ spec:
     spec:
       containers:
       - name: hey
-        image: devopsfaith/hey:latest
+        image: williamyeh/hey:latest
         command:
         - /bin/sh
         - -c
         - |
+          echo "Starting realistic traffic generator..."
+          (
+            while true; do
+              # Random sleep before spike (10–60s)
+              sleep $((RANDOM % 50 + 10))
+
+              echo "Traffic spike starting..."
+
+              # Ramp-up → peak → decay pattern
+              for c in 5 10 20 30 20 10 5; do
+                hey -z 5s -c $c http://nginx-baseline-svc:80/ > /dev/null 2>&1
+                hey -z 5s -c $c http://api-baseline-svc:8080/ > /dev/null 2>&1
+              done
+
+              echo "Spike finished"
+            done
+          ) &
+
           while true; do
-            # Send traffic to Nginx
-            echo "Sending traffic to Nginx..."
-            hey -n 200 -c 10 http://nginx-baseline-svc:80/
-            
-            # Send traffic to API
-            echo "Sending traffic to API..."
-            hey -n 100 -c 5 http://api-baseline-svc:8080/
-            
-            sleep 10
+
+            # occasional quiet period (~20% probability)
+            if [ $((RANDOM % 5)) -eq 0 ]; then
+              echo "Quiet period..."
+              sleep $((RANDOM % 15 + 5))
+            fi
+
+            # steady normal traffic
+            hey -z 30s -q 40 -c 5 http://nginx-baseline-svc:80/ > /dev/null 2>&1 &
+            hey -z 30s -q 40 -c 5 http://api-baseline-svc:8080/ > /dev/null 2>&1 &
+
+            wait
           done
+

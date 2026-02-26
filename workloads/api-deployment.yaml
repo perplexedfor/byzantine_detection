@@ -25,21 +25,42 @@ spec:
           import socketserver
           import time
           import random
-          
+          import threading
+
           class Handler(http.server.SimpleHTTPRequestHandler):
+
               def do_GET(self):
-                  # Simulate some processing time
-                  time.sleep(random.uniform(0.01, 0.1))
+                  # Simulate variable processing latency
+                  compute_time = random.uniform(0.01, 0.1)
+
+                  # occasional slow request (~5%)
+                  if random.random() < 0.05:
+                      compute_time += random.uniform(0.1, 0.3)
+
+                  time.sleep(compute_time)
+
                   self.send_response(200)
                   self.send_header('Content-type', 'text/plain')
                   self.end_headers()
-                  self.wfile.write(b'API Response OK\n')
 
-          with socketserver.TCPServer(("", 8080), Handler) as httpd:
-              print("serving at port", 8080)
+                  response = f"API OK handled by {threading.get_ident()}\n"
+                  self.wfile.write(response.encode())
+
+          # ✅ Threaded concurrent server
+          class ThreadedTCPServer(
+              socketserver.ThreadingMixIn,
+              socketserver.TCPServer
+          ):
+              allow_reuse_address = True
+              daemon_threads = True
+
+          with ThreadedTCPServer(("", 8080), Handler) as httpd:
+              print("Serving threaded API on port 8080")
               httpd.serve_forever()
+
         ports:
         - containerPort: 8080
+
 ---
 apiVersion: v1
 kind: Service

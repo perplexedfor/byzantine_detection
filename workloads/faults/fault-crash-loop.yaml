@@ -16,11 +16,15 @@ spec:
     spec:
       containers:
       - name: crash-loop
-        image: busybox
+        image: crash-loop-stress:latest
+        imagePullPolicy: Never
         command:
         - /bin/sh
         - -c
         - |
-          echo "Starting normally, will crash in 5 seconds to simulate a crash loop..."
-          sleep 5
+          echo "Crash-loop simulation starting..."
+          
+          echo "Starting normally, will crash in {{CRASH_INTERVAL}} seconds to simulate a crash loop..."
+          stress-ng --cpu {{CRASH_WORKERS}} --timeout {{CRASH_INTERVAL-2}}s &
+          sleep {{CRASH_INTERVAL}}
           exit 1 # Crash the container

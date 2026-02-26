@@ -3,6 +3,8 @@ import csv
 import json
 import subprocess
 import requests
+import sys
+import os
 from datetime import datetime
 
 # Configuration
@@ -10,8 +12,11 @@ PROMETHEUS_URL = "http://localhost:9090"
 TETRAGON_LOGS_CMD = [
     "k3s", "kubectl", "logs", "-n", "kube-system", "ds/tetragon", "-c", "export-stdout", "--tail=0", "-f"
 ]
-OUTPUT_CSV = "node_metrics.csv"
 COLLECTION_INTERVAL_SEC = 10 # 10 second aggregation window
+
+WORKLOADS_BASE_DIR = os.path.dirname(os.path.realpath(__file__))
+DATASET_DIR = os.path.join(WORKLOADS_BASE_DIR, "../dataset")
+os.makedirs(DATASET_DIR, exist_ok=True)
 
 # Map Prometheus node IPs to actual node names from Tetragon
 # Update this with your actual edge cluster IPs and hostnames if they differ
@@ -123,6 +128,13 @@ def process_tetragon_event(event_line):
          print(f"Error parsing event: {e}")
 
 def main():
+    if len(sys.argv) < 2:
+        print("Error: Missing run_id argument. Usage: python collect_baseline.py <run_id>")
+        sys.exit(1)
+        
+    run_id = sys.argv[1]
+    OUTPUT_CSV = os.path.join(DATASET_DIR, f"node_metrics_{run_id}.csv")
+    
     # 1. Start reading Tetragon logs in the background
     print("Starting Tetragon log stream...")
     tetragon_process = subprocess.Popen(

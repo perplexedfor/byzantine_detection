@@ -25,8 +25,8 @@ spec:
           data = []
           print("Starting memory leak simulation...")
           while True:
-              # Allocate ~10MB every second
-              data.append(' ' * 10 * 1024 * 1024)
+              # Allocate dynamic MB every second
+              data.append(' ' * {{LEAK_RATE}} * 1024 * 1024)
               time.sleep(1)
         resources:
           limits:

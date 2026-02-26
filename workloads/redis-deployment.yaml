@@ -15,10 +15,49 @@ spec:
         app: redis-baseline
     spec:
       containers:
+
+      #################################
+      # Redis Server
+      #################################
       - name: redis
         image: redis:alpine
         ports:
         - containerPort: 6379
+
+      #################################
+      # Redis Load Generator Sidecar
+      #################################
+      - name: redis-load
+        image: redis:alpine
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting Redis workload generator..."
+
+          while true; do
+
+            KEY="key_$RANDOM"
+            VALUE="value_$RANDOM"
+
+            # write
+            redis-cli -h localhost SET $KEY $VALUE >/dev/null
+
+            # read
+            redis-cli -h localhost GET $KEY >/dev/null
+
+            # occasional burst
+            if [ $((RANDOM % 5)) -eq 0 ]; then
+              for i in $(seq 1 20); do
+                redis-cli -h localhost SET burst_$RANDOM data >/dev/null
+              done
+            fi
+
+            # jittered interval
+            sleep $((RANDOM % 3 + 1))
+
+          done
+
 ---
 apiVersion: v1
 kind: Service

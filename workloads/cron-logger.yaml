@@ -16,6 +16,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $((RANDOM % 20))
               echo "Starting background task..."
               # Simulate some file operations
               mkdir -p /tmp/work

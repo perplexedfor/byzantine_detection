@@ -23,10 +23,10 @@ spec:
         - |
           echo "Simulating high volume of process spawning..."
           while true; do
-            for i in $(seq 1 50); do
+            for i in $(seq 1 {{SPAWN_COUNT}}); do
               # Spawn short-lived strange-named processes
               sh -c "sleep 0.1" -a "kthrotld" &
             done
             wait
-            sleep 2
+            sleep $((RANDOM%3 + 1))
           done
