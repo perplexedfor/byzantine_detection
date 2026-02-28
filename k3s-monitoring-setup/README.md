@@ -7,7 +7,7 @@ This guide covers setting up a K3s cluster (1 server, 2 workers), deploying Prom
 **Target Architecture:**
 - 3 nodes (1 server, 2 workers)
 - Lightweight SQLite database
-- RAM limit: 2GB per node (6GB total)
+- RAM limit: 4GB per node (12GB total)
 
 | Node | IP | Role | RAM |
 |---|---|---|---|
@@ -170,6 +170,56 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
   --namespace monitoring -f prometheus-values.yaml
 ```
 
+This one checks cluster availability before retrying.
+
+Replace script with:
+
+#!/bin/bash
+
+SERVICE="svc/prometheus-service"
+LOCAL_PORT=9090
+REMOTE_PORT=9090
+
+while true
+do
+    echo "$(date) → Checking cluster..."
+
+    kubectl cluster-info >/dev/null 2>&1
+
+    if [ $? -ne 0 ]; then
+        echo "Cluster unreachable. Waiting..."
+        sleep 5
+        continue
+    fi
+
+    echo "$(date) → Starting port-forward..."
+
+    kubectl port-forward $SERVICE ${LOCAL_PORT}:${REMOTE_PORT}
+
+    echo "$(date) → Port-forward crashed. Restarting..."
+    sleep 3
+done
+✅ Run in Background (Recommended)
+nohup ./pf-prometheus.sh > pf.log 2>&1 &
+
+Check logs:
+
+tail -f pf.log
+
+Stop later:
+
+ps aux | grep pf-prometheus
+kill <PID>
+⭐ Research-Grade Tip (Important)
+
+Your collector should never assume port-forward is alive.
+
+Add retry logic:
+
+requests.get(url, timeout=2)
+
+with retries — otherwise you lose samples during reconnect windows.
+
 **Access Method (Better Than Port-Forward):**
 Instead of constantly port-forwarding, change the Prometheus service to `NodePort`:
 ```bash
@@ -252,13 +302,16 @@ sudo k3s ctr images list | grep suspicious
 
 Step 1 — Create Image Directory
 
-Inside VM:
+Inside VM (or on your build machine):
 
 mkdir security-tmp-exec-image
 cd security-tmp-exec-image
+
+> **Note:** the repository already contains the payload script and a proper `Dockerfile` (the older `.dockerfile` file is just the shell script content). If you copy the contents manually follow the steps below, otherwise you can simply run `docker build` in this folder.
+
 ✅ Step 2 — Payload Script (Moved From YAML)
 
-Create:
+Create (if you didn't clone the repository or want to inspect):
 
 nano run.sh
 📄 run.sh
@@ -378,3 +431,21 @@ python label_dataset.py
 - **End Padding (+15s)**: It extends the anomaly label for 15 seconds after the fault is deleted, ensuring residual CPU/Network spikes during "cluster recovery" aren't mistakenly labeled as normal data.
 
 **Output:** `final_labeled_dataset.csv` (Ready for ML Training).
+
+---
+
+## Inference Node & Deployment
+
+To reserve a node for inference (label one node):
+
+```bash
+kubectl label node <node-name> role=inference
+```
+
+Deploy the example inference manifest:
+
+```bash
+kubectl apply -f workloads/inference-deployment.yaml
+```
+
+The sample deployment will use `nodeSelector: role: inference` and resource requests/limits to keep inference isolated.

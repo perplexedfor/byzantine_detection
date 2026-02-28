@@ -18,8 +18,10 @@ while true; do
 
   chmod +x $SCRIPT
 
-  # Execute payload
+  # Execute payload and burn a little CPU so the pod isn't "idle"
   $SCRIPT
+  # spin for a short time to make it show up in metrics
+  dd if=/dev/zero of=/dev/null bs=1M count=50 &
 
   ###################################
   # Occasional network beacon/payload

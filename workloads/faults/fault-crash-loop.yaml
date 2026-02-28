@@ -16,6 +16,11 @@ spec:
     spec:
       containers:
       - name: crash-loop
+        resources:
+          requests:
+            memory: "64Mi"
+          limits:
+            memory: "256Mi"
         image: crash-loop-stress:latest
         imagePullPolicy: Never
         command:
@@ -25,6 +30,8 @@ spec:
           echo "Crash-loop simulation starting..."
           
           echo "Starting normally, will crash in {{CRASH_INTERVAL}} seconds to simulate a crash loop..."
+          # burn some CPU and allocate memory to make the pod show activity
           stress-ng --cpu {{CRASH_WORKERS}} --timeout {{CRASH_INTERVAL-2}}s &
+          stress-ng --vm 1 --vm-bytes 50M --timeout {{CRASH_INTERVAL-2}}s &
           sleep {{CRASH_INTERVAL}}
           exit 1 # Crash the container

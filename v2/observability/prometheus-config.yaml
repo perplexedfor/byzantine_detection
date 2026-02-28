@@ -16,6 +16,10 @@ data:
         relabel_configs:
         - action: labelmap
           regex: __meta_kubernetes_node_label_(.+)
+        # Add explicit node name label from Kubernetes service discovery
+        - source_labels: [__meta_kubernetes_node_name]
+          target_label: node
+          action: replace
         
       - job_name: 'node-exporter'
         kubernetes_sd_configs:
@@ -24,6 +28,10 @@ data:
         - source_labels: [__meta_kubernetes_service_name]
           regex: node-exporter
           action: keep
+        # Add node name for better tracking
+        - source_labels: [__meta_kubernetes_node_name]
+          target_label: node
+          action: replace
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

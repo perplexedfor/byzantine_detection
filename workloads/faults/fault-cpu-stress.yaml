@@ -27,9 +27,12 @@ spec:
         - "{{CPU_METHOD}}"
         - --timeout
         - "{{DURATION}}"
+        - --verbose
       restartPolicy: Always
       resources:
         requests:
           cpu: "500m"
+          memory: "128Mi"
         limits:
           cpu: "2"
+          memory: "256Mi"

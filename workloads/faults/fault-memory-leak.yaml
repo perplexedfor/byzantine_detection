@@ -22,12 +22,34 @@ spec:
         - -c
         - |
           import time
+          import signal
+          import sys
+          
           data = []
+          leaked_total = 0
+          max_mb = 800
+          
           print("Starting memory leak simulation...")
-          while True:
-              # Allocate dynamic MB every second
-              data.append(' ' * {{LEAK_RATE}} * 1024 * 1024)
-              time.sleep(1)
+          print(f"Will leak up to {max_mb} MB")
+          
+          def signal_handler(sig, frame):
+              print(f"[!] Stopping memory leak at {leaked_total} MB")
+              sys.exit(0)
+          
+          signal.signal(signal.SIGTERM, signal_handler)
+          
+          try:
+              while leaked_total < max_mb:
+                  leak_amount = {{LEAK_RATE}}
+                  data.append(' ' * leak_amount * 1024 * 1024)
+                  leaked_total += leak_amount
+                  print(f"[+] Leaked {leaked_total} MB total")
+                  time.sleep(2)  # Slower leak rate
+          except MemoryError:
+              print(f"[!] Hit memory limit at {leaked_total} MB")
+              sys.exit(0)
         resources:
+          requests:
+            memory: "256Mi"
           limits:
-            memory: "500Mi" # Will cause OOMKilled evictions eventually
+            memory: "1Gi"  # Increased from 500Mi to accommodate controlled leak

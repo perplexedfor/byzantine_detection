@@ -14,28 +14,23 @@ kubeEtcd:
 # Reduce Prometheus footprint
 prometheus:
   prometheusSpec:
-    retention: 6h
-    scrapeInterval: 30s
-    evaluationInterval: 30s
+    # Retention and resources tuned for 4Gi/4CPU nodes
+    retention: 4h
+    # Keep scrape/evaluation at 10s to match offline training sampling
+    # NOTE: matching your model's expected sampling rate (10s) is critical.
+    scrapeInterval: 10s
+    evaluationInterval: 10s
     replicas: 1
 
     resources:
       requests:
-        memory: 400Mi
-        cpu: 200m
+        cpu: 250m
+        memory: 512Mi
       limits:
-        memory: 700Mi
-        cpu: 500m
+        cpu: 1000m
+        memory: 1.5Gi
 
-# Reduce Grafana footprint
-grafana:
-  resources:
-    requests:
-      memory: 150Mi
-      cpu: 100m
-    limits:
-      memory: 300Mi
-      cpu: 200m
+# Grafana removed to save resources in the test environment
 
 # Alertmanager light config
 alertmanager:
@@ -53,3 +48,16 @@ nodeExporter:
       memory: 50Mi
     limits:
       memory: 100Mi
+
+# Example metric relabel configs to drop high-cardinality labels.
+# Add these to specific `scrape_configs` or provide via `additionalScrapeConfigs`.
+# Apply conservatively — prefer targeting individual metrics/labels to avoid
+# discarding useful telemetry.
+# Example (drop pod/container/instance labels and a noisy metric):
+# metric_relabel_configs:
+#   - source_labels: [pod, container, instance]
+#     regex: .+
+#     action: drop
+#   - source_labels: [__name__]
+#     regex: some_very_verbose_metric_name
+#     action: drop

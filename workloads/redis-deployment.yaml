@@ -15,18 +15,10 @@ spec:
         app: redis-baseline
     spec:
       containers:
-
-      #################################
-      # Redis Server
-      #################################
       - name: redis
         image: redis:alpine
         ports:
         - containerPort: 6379
-
-      #################################
-      # Redis Load Generator Sidecar
-      #################################
       - name: redis-load
         image: redis:alpine
         command:

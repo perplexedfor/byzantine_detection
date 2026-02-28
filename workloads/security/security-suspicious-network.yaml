@@ -44,3 +44,8 @@ spec:
             sleep $((RANDOM % {{CONNECT_INTERVAL}} + 1))
 
           done
+      resources:
+        requests:
+          memory: "64Mi"
+        limits:
+          memory: "128Mi"

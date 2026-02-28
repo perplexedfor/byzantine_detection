@@ -26,23 +26,69 @@ IP_TO_NODE_MAP = {
     "192.168.56.12": "sw-wk3"  # worker 2
 }
 
+EXPECTED_NODES = len(IP_TO_NODE_MAP)  # Expected number of nodes in cluster
 
 # State for Tetragon metrics per node
 # Structure: { "node_name": { "exec_count": 0, "unique_process_count": set(), "tmp_exec_count": 0, "outbound_connect_count": 0, "mining_port_count": 0, "syscalls": {} } }
 tetragon_state = {}
 
 def get_prometheus_metric(query):
+    """Fetch Prometheus metric. Returns tuple (data_dict, success_flag).
+    
+    Attempts to map instances to node names by:
+    1. Using 'node' label if available (from Kubernetes service discovery)
+    2. Falling back to IP_TO_NODE_MAP if node label not present
+    3. Using raw instance IP as last resort
+    """
     try:
-        response = requests.get(f"{PROMETHEUS_URL}/api/v1/query", params={'query': query})
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query", 
+            params={'query': query},
+            timeout=5
+        )
         response.raise_for_status()
+        if response.status_code != 200:
+            print(f"Prometheus query failed with status {response.status_code}: {query}")
+            return {}, False
+        
         data = response.json()['data']['result']
-        # Return a dictionary of node -> value
-        return {item['metric'].get('instance', '').split(':')[0]: float(item['value'][1]) for item in data}
+        result_data = {}
+        
+        for item in data:
+            # Try multiple strategies to identify the node
+            instance_str = item['metric'].get('instance', '')
+            instance_ip = instance_str.split(':')[0] if instance_str else ''
+            
+            # Strategy 1: Use 'node' label if available (preferred - from Kubernetes)
+            node_name = item['metric'].get('node')
+            
+            # Strategy 2: Use '__meta_kubernetes_node_name' if present
+            if not node_name:
+                node_name = item['metric'].get('__meta_kubernetes_node_name')
+            
+            # Strategy 3: Map known IPs to node names
+            if not node_name and instance_ip:
+                node_name = IP_TO_NODE_MAP.get(instance_ip)
+            
+            # Strategy 4: Use the instance IP as fallback
+            if not node_name:
+                node_name = instance_ip if instance_ip else 'unknown'
+            
+            result_data[node_name] = float(item['value'][1])
+        
+        return result_data, True
+    except requests.exceptions.Timeout:
+        print(f"Timeout fetching Prometheus query '{query}'")
+        return {}, False
+    except requests.exceptions.ConnectionError as e:
+        print(f"Connection error fetching Prometheus query '{query}': {e}")
+        return {}, False
     except Exception as e:
         print(f"Error fetching Prometheus query '{query}': {e}")
-        return {}
+        return {}, False
 
 def collect_prometheus_metrics():
+    """Collect Prometheus metrics. Returns dict with metrics and query_success flag."""
     # avg_cpu: 1 - avg idle CPU over the last 1m
     cpu_query = '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) by (instance)'
     # avg_mem: (total - available) / total
@@ -51,11 +97,20 @@ def collect_prometheus_metrics():
     net_in_query = 'rate(node_network_receive_bytes_total{device="enp0s3"}[1m])'
     net_out_query = 'rate(node_network_transmit_bytes_total{device="enp0s3"}[1m])'
 
+    cpu_data, cpu_ok = get_prometheus_metric(cpu_query)
+    mem_data, mem_ok = get_prometheus_metric(mem_query)
+    net_in_data, net_in_ok = get_prometheus_metric(net_in_query)
+    net_out_data, net_out_ok = get_prometheus_metric(net_out_query)
+    
+    # All queries must succeed
+    query_success = cpu_ok and mem_ok and net_in_ok and net_out_ok
+
     return {
-        'avg_cpu': get_prometheus_metric(cpu_query),
-        'avg_mem': get_prometheus_metric(mem_query),
-        'net_bytes_in': get_prometheus_metric(net_in_query),
-        'net_bytes_out': get_prometheus_metric(net_out_query),
+        'avg_cpu': cpu_data,
+        'avg_mem': mem_data,
+        'net_bytes_in': net_in_data,
+        'net_bytes_out': net_out_data,
+        'query_success': query_success
     }
 
 def map_prom_metrics_to_nodes(prom_metrics):
@@ -67,12 +122,60 @@ def map_prom_metrics_to_nodes(prom_metrics):
     }
     
     for metric_name, node_data in prom_metrics.items():
+        if metric_name == 'query_success':
+            continue  # Skip the query_success flag
         for ip, value in node_data.items():
             # Apply mapping if IP is known, otherwise fallback to the IP string
             node_name = IP_TO_NODE_MAP.get(ip, ip)
             mapped_metrics[metric_name][node_name] = value
 
     return mapped_metrics
+
+def detect_impossible_values(prom_metrics):
+    """Check for sudden impossible values (instant zeros in CPU, Memory, Network).
+    
+    Returns True if impossible values detected (indicates monitoring gap).
+    """
+    # Check for sudden zeros across all metrics
+    metrics_to_check = ['avg_cpu', 'avg_mem', 'net_bytes_in', 'net_bytes_out']
+    
+    for metric_name in metrics_to_check:
+        metric_data = prom_metrics.get(metric_name, {})
+        for node, value in metric_data.items():
+            # Sudden jump to exactly 0.0 in CPU, Memory, or Network is suspicious
+            # (excluding valid zero cases like no network traffic is difficult,
+            # but combined with other checks this helps detect monitoring gaps)
+            if value == 0.0 and metric_name in ['avg_cpu', 'avg_mem']:
+                print(f"Warning: Impossible value detected - {metric_name} = 0.0 on {node}")
+                return True
+    
+    return False
+
+def validate_metrics(prom_metrics, all_nodes_expected):
+    """Validate that metrics are complete and reasonable.
+    
+    Returns tuple (is_valid, is_transition).
+    is_valid: True if metrics look good
+    is_transition: True if we should mark this window as transition
+    """
+    
+    # Check 1: Prometheus query failure
+    if not prom_metrics.get('query_success', True):
+        print("Transition: Prometheus query failed")
+        return False, True
+    
+    # Check 2: Missing metrics for expected nodes
+    cpu_metrics = prom_metrics.get('avg_cpu', {})
+    if len(cpu_metrics) < all_nodes_expected:
+        print(f"Transition: Missing metrics - expected {all_nodes_expected} nodes, got {len(cpu_metrics)}")
+        return False, True
+    
+    # Check 3: Detect impossible values (sudden zeros)
+    if detect_impossible_values(prom_metrics):
+        print("Transition: Impossible values detected (monitoring gap)")
+        return False, True
+    
+    return True, False
 
 def process_tetragon_event(event_line):
     try:
@@ -185,8 +288,14 @@ def main():
                 # Use the exact same epoch timestamp format as the scenario_runner
                 current_timestamp = int(time.time())
                 
-                # Currently collecting 'normal' baseline behavior
-                current_label = "normal" 
+                # Check for transition conditions
+                is_transition = False
+                metrics_valid, metrics_transition = validate_metrics(raw_prom_metrics, EXPECTED_NODES)
+                if metrics_transition:
+                    is_transition = True
+                
+                # Mark as transition or normal baseline
+                current_label = "transition" if is_transition else "normal" 
 
                 # Write out row per node
                 for node in all_nodes:

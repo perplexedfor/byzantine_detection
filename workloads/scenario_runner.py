@@ -140,7 +140,7 @@ def main():
                     }
                 elif label == "memory_leak":
                     params = {
-                        "{{LEAK_RATE}}": random.choice([5, 10, 20, 30]) # MB per second
+                        "{{LEAK_RATE}}": random.choice([2, 3, 4, 5]) # MB per 2 seconds (REDUCED from [5,10,20,30])
                     }
                 elif label == "network_chaos":
                     params = {
@@ -159,7 +159,7 @@ def main():
                     }
                 elif label == "security_high_process":
                     params = {
-                        "{{SPAWN_COUNT}}": random.randint(20, 100)
+                        "{{SPAWN_COUNT}}": random.randint(10, 40) # REDUCED from [20,100]
                     }
                 elif label == "security_suspicious_network":
                     # Randomize destination ports to simulate beaconing vs mining
@@ -190,10 +190,11 @@ def main():
                 print(f"Cleaning up {filepath}...")
                 delete_workload(filepath)
                 
-                # 30 second buffer to ensure cleanup finishes, recorded explicitly as 'transition'
-                print("Waiting 30 seconds for cleanup (recording as 'transition' buffer)...")
+                # 60 second buffer to ensure cleanup finishes and memory is reclaimed
+                # Record explicitly as 'transition' buffer
+                print("Waiting 60 seconds for cleanup and memory reclamation (recording as 'transition' buffer)...")
                 trans_start = time.time()
-                time.sleep(30) 
+                time.sleep(60) 
                 trans_end = time.time()
                 writer.writerow([int(trans_start), int(trans_end), "transition", "all", run_id, fault_order_hash, intensity_seed])
             
