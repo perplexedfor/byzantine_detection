@@ -1,8 +1,0 @@
-kopf
-kubernetes
-prometheus-api-client
-torch
-numpy
-pandas
-scikit-learn
-requests

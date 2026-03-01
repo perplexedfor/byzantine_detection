@@ -1,1 +1,0 @@
-# byzantine_detection
