@@ -19,6 +19,8 @@ ALL_ANOMALIES = [
     ("memory_leak", os.path.join(FAULTS_DIR, "fault-memory-leak.yaml")),
     ("network_chaos", os.path.join(FAULTS_DIR, "fault-network-chaos.yaml")),
     ("crash_loop", os.path.join(FAULTS_DIR, "fault-crash-loop.yaml")),
+    # Edge-specific Fault
+    ("edge_network_flap", os.path.join(FAULTS_DIR, "fault-network-flap.yaml")),
     
     # Security Anomalies
     ("security_tmp_exec", os.path.join(SECURITY_DIR, "security-tmp-exec.yaml")),
@@ -169,6 +171,12 @@ def main():
                         "{{PORT_1}}": selected_ports[0],
                         "{{PORT_2}}": selected_ports[1],
                         "{{CONNECT_INTERVAL}}": random.randint(3, 15)
+                    }
+                elif label == "edge_network_flap":
+                    # Duration is already determined by the timeline; pass it through
+                    # so fault-network-flap.yaml's tc netem runs for the right window.
+                    params = {
+                        "{{DURATION}}": f"{duration}s"
                     }
                 
                 print(f"Injecting Parameters: {params}")

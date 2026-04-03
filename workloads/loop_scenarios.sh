@@ -24,6 +24,10 @@ while true; do
     
     # Run the Python script (it now auto-appends to the CSV)
     python3 scenario_runner.py
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "WARNING: scenario_runner.py exited with error code $EXIT_CODE on Loop #$LOOP_COUNT. Continuing to next loop..."
+    fi
     
     echo "Finished Loop #$LOOP_COUNT."
     echo "Waiting 60 seconds before starting the next loop to ensure total cluster normalization..."

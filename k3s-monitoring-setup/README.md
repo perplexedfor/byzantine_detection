@@ -1,129 +1,160 @@
-# K3s Server/Worker Cluster, Monitoring Setup & ML Dataset Pipeline
+# K3s Monitoring Setup & ML Dataset Pipeline
 
-This guide covers setting up a K3s cluster (1 server, 2 workers), deploying Prometheus/Tetragon, orchestrating workloads, and extracting a clean dataset.
+## Table of Contents
 
-## 0. Cluster Setup (Single Server)
+1. [Architecture Overview](#1-architecture-overview)
+2. [Phase 0 — Cluster Setup](#2-phase-0--cluster-setup)
+3. [Phase 1 — Prerequisites](#3-phase-1--prerequisites)
+4. [Phase 2 — Install Monitoring Stack](#4-phase-2--install-monitoring-stack)
+5. [Phase 3 — Build Custom Docker Images](#5-phase-3--build-custom-docker-images)
+6. [Phase 4 — Node Role Labels](#6-phase-4--node-role-labels-edge-simulation)
+7. [Phase 5 — Run the Data Collection Pipeline](#7-phase-5--run-the-data-collection-pipeline)
+8. [Phase 6 — Label the Dataset](#8-phase-6--label-the-dataset)
+9. [Phase 7 — Inference Deployment](#9-phase-7--inference-deployment)
+10. [Verification & Health Checks](#10-verification--health-checks)
+11. [Troubleshooting](#11-troubleshooting)
 
-**Target Architecture:**
-- 3 nodes (1 server, 2 workers)
-- Lightweight SQLite database
-- RAM limit: 4GB per node (12GB total)
+---
 
-| Node | IP | Role | RAM |
-|---|---|---|---|
-| Node 1 | 192.168.56.10 | Control Plane (Server) | 2GB |
-| Node 2 | 192.168.56.11 | Worker (Agent) | 2GB |
-| Node 3 | 192.168.56.12 | Worker (Agent) | 2GB |
+## 1. Architecture Overview
 
-**Network Setup:**
-Each VM should have Adapter 1 as NAT and Adapter 2 as Host-only (Static IP).
+**Cluster topology** (VirtualBox VMs, host-only network `192.168.56.0/24`):
 
+| Node | Hostname | IP | Role | RAM | Edge Role |
+|---|---|---|---|---|---|
+| Node 1 | `k3s-wk1` | `192.168.56.10` | Control Plane (Server) | 3 GB | `coordinator` |
+| Node 2 | `sw-wk2` | `192.168.56.11` | Worker (Agent) | 2 GB | `compute` |
+| Node 3 | `sw-wk3` | `192.168.56.12` | Worker (Agent) | 2 GB | `sensor-gateway` |
 
-mount -t vboxsf byzantine_node_proj /mnt/shared
+**Data flow:**
+```
+Workloads (Nginx/Redis/API) + Fault Injector
+          ↓ metrics (10s interval)
+      Prometheus (NodePort: 9090)
+      Tetragon  (eBPF kernel logs)
+          ↓
+    collect_baseline.py ──→ node_metrics_<run_id>.csv
+    scenario_runner.py  ──→ scenario_labels_<run_id>.csv
+          ↓
+    label_dataset.py ──→ final_labeled_dataset.csv
+```
 
-### Step 0.1: Install First Control Plane Node (Node 1)
+**Network interfaces per VM:**
+- `enp0s3` — NAT adapter (internet access)
+- `enp0s8` — Host-only adapter (inter-node communication, static IP)
 
-Proper Fix (Disable cloud-init network management)
-Step 1 — Check if file exists
-ls /etc/netplan
+---
 
-If you see:
+## 2. Phase 0 — Cluster Setup
 
-50-cloud-init.yaml
+> **Skip this phase if your cluster is already running.** Jump to [Phase 1](#3-phase-1--prerequisites).
 
-Then this is the cause.
+### 2.1 Fix Static Network (All VMs)
 
-Step 2 — Disable cloud-init network config
+VirtualBox Ubuntu Server VMs reset networking on reboot if cloud-init is managing it. Fix it permanently:
 
-Create this file:
+**Run on every node:**
 
+```bash
+# Step 1: Disable cloud-init network management
 sudo nano /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
-
-Add:
-
+```
+Add this single line and save:
+```
 network: {config: disabled}
+```
 
-Save.
-
-Step 3 — Remove the cloud-init netplan file
+```bash
+# Step 2: Remove the cloud-init netplan file
 sudo rm /etc/netplan/50-cloud-init.yaml
-Step 4 — Create Your Own Stable Netplan File
 
-Create a new file:
-
+# Step 3: Create a stable static IP config
 sudo nano /etc/netplan/01-static.yaml
+```
 
-Put this:
-
+Paste the following — **change the IP address per node**:
+```yaml
 network:
   version: 2
   renderer: networkd
   ethernets:
     enp0s3:
-      dhcp4: true
+      dhcp4: true        # NAT interface — keep DHCP for internet
     enp0s8:
       dhcp4: no
       addresses:
-        - 192.168.56.10/24
+        - 192.168.56.10/24   # Change to .11 on Node 2, .12 on Node 3
+```
 
-(Adjust IP per node.)
-
-Step 5 — Apply
+```bash
+# Step 4: Apply and reboot
 sudo netplan generate
 sudo netplan apply
-Step 6 — Reboot to Confirm
 sudo reboot
+```
 
-After reboot:
+After reboot, verify: `ip a` — the static IP should persist.
 
-ip a
+---
 
-Your static IP should remain.
-On Node 1 (`192.168.56.10`):
+### 2.2 Install k3s on Control Plane (Node 1 only)
+
 ```bash
 curl -sfL https://get.k3s.io | sh -s - server \
   --node-ip=192.168.56.10 \
   --disable traefik
 ```
-Get the cluster token and save it:
+
+Save the cluster join token for the worker nodes:
 ```bash
 sudo cat /var/lib/rancher/k3s/server/node-token
 ```
 
-### Step 0.2: Join First Worker (Node 2)
-On Node 2 (`192.168.56.11`):
+---
+
+### 2.3 Join Workers
+
+**Node 2 (`192.168.56.11`):**
 ```bash
 curl -sfL https://get.k3s.io | sh -s - agent \
   --server https://192.168.56.10:6443 \
-  --token <token> \
+  --token <token-from-above> \
   --node-ip=192.168.56.11
 ```
 
-### Step 0.3: Join Second Worker (Node 3)
-On Node 3 (`192.168.56.12`):
+**Node 3 (`192.168.56.12`):**
 ```bash
 curl -sfL https://get.k3s.io | sh -s - agent \
   --server https://192.168.56.10:6443 \
-  --token <token> \
+  --token <token-from-above> \
   --node-ip=192.168.56.12
 ```
 
-### Step 0.4: Verify Cluster
+---
+
+### 2.4 Verify Cluster
+
 From Node 1:
 ```bash
 sudo k3s kubectl get nodes
 ```
 
+Expected output — all nodes `Ready`:
+```
+NAME      STATUS   ROLES                  AGE   VERSION
+k3s-wk1   Ready    control-plane,master   2m    v1.x.x
+sw-wk2    Ready    <none>                 1m    v1.x.x
+sw-wk3    Ready    <none>                 1m    v1.x.x
+```
+
 ---
 
-## 1. Prerequisites (For Monitoring)
+## 3. Phase 1 — Prerequisites
 
-To properly orchestrate monitoring (Prometheus/Tetragon) and dataset injection, your environment must be correctly configured.
+Run all steps below **from Node 1** unless stated otherwise.
 
-### Step 1.1: Configure kubectl (Node 1)
-By default, K3s places the kubeconfig file where only `root` can access it, and you have to type `k3s kubectl`. To use standard `kubectl` without `sudo`:
+### 3.1 Configure kubectl Without sudo
 
-Run this on Node 1:
 ```bash
 mkdir -p ~/.kube
 sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
@@ -131,321 +162,569 @@ sudo chown $(id -u):$(id -g) ~/.kube/config
 echo 'export KUBECONFIG=~/.kube/config' >> ~/.bashrc
 source ~/.bashrc
 ```
-Test it works by simply running: `kubectl get nodes`
 
-### Step 1.2: Install Helm (Node 1)
-Helm is the package manager for Kubernetes. You need it to install the monitoring stack.
+Test: `kubectl get nodes` (no sudo required).
 
-Run this on Node 1:
+---
+
+### 3.2 Install Helm
+
 ```bash
 curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
 chmod 700 get_helm.sh
 ./get_helm.sh
 rm get_helm.sh
 ```
-Test it works: `helm version`
 
-### Step 1.3: Prevent Time Drift (All 3 Nodes)
-Machine Learning anomaly detection relies on precise timestamps down to the second. Virtual Machines often suffer from "Time Drift".
+Test: `helm version`
 
-**Run this command on EVERY node (Node 1, Node 2, and Node 3):**
+---
+
+### 3.3 Prevent Time Drift (All 3 Nodes)
+
+> **Critical:** The LSTM model training depends on precise 10-second timestamps. VM time drift corrupts the dataset alignment between Prometheus scrapes and scenario labels.
+
+**Run on every node (Node 1, 2, and 3):**
 ```bash
 sudo apt update && sudo apt install -y systemd-timesyncd
 sudo systemctl enable --now systemd-timesyncd
 sudo timedatectl set-ntp true
 ```
-You can verify clocks are synced by running `timedatectl status` on each machine.
+
+Verify sync: `timedatectl status` — look for `System clock synchronized: yes`.
 
 ---
 
-## 1. Install Monitoring Stack
+### 3.4 Install Python Dependencies (Node 1)
 
-### 1.1 Prometheus (kube-prometheus-stack)
-
-Install the lightweight Prometheus stack using the custom `prometheus-values.yaml` (which includes memory limits):
 ```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-kubectl create namespace monitoring
-helm install prometheus prometheus-community/kube-prometheus-stack \
-  --namespace monitoring -f prometheus-values.yaml
+pip install requests
 ```
 
-This one checks cluster availability before retrying.
+---
 
-Replace script with:
 
+## 4. Phase 2 — Install Monitoring Stack
+
+### 4.1 Install Prometheus (kube-prometheus-stack)
+
+The custom `prometheus-values.yaml` configures:
+- **10s scrape/evaluation interval** — matches the LSTM training sampling rate
+- **Metric filtering** — only the 4 metric families used by `collect_baseline.py` are kept (reduces memory + TSDB pressure)
+- **Memory limits** — Prometheus: 1.5Gi, Alertmanager: 200Mi, node-exporter: 100Mi
+
+```bash
+# Add repo and create namespace
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+kubectl create namespace monitoring
+
+# Install with custom values
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  -f prometheus-values.yaml
+```
+
+Wait for Prometheus to become ready:
+```bash
+kubectl rollout status deployment/prometheus-kube-prometheus-operator -n monitoring
+kubectl get pods -n monitoring
+```
+
+> **To apply config changes later** (e.g., after editing `prometheus-values.yaml`):
+> ```bash
+> helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+>   --namespace monitoring -f prometheus-values.yaml
+> ```
+
+---
+
+### 4.2 Expose Prometheus via Port-Forward (with Auto-Restart Watchdog)
+
+Data collection scripts access Prometheus at `http://localhost:9090`. `kubectl port-forward` is used to tunnel it locally, but the tunnel can crash silently — causing missed scrapes and gaps in your dataset. The watchdog script below monitors the tunnel and restarts it automatically.
+
+**Step 1 — Create the watchdog script:**
+
+```bash
+cat > /mnt/shared/k3s-monitoring-setup/pf-watchdog.sh << 'EOF'
 #!/bin/bash
+# Port-forward watchdog for Prometheus
+# Restarts the tunnel immediately if it crashes, so no data is lost.
 
-SERVICE="svc/prometheus-service"
+NAMESPACE="monitoring"
+SERVICE="svc/prometheus-kube-prometheus-prometheus"
 LOCAL_PORT=9090
 REMOTE_PORT=9090
+LOGFILE="/tmp/pf-watchdog.log"
+PIDFILE="/tmp/pf-watchdog.pid"
 
-while true
-do
-    echo "$(date) → Checking cluster..."
+echo $$ > "$PIDFILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Watchdog started (PID $$)" | tee -a "$LOGFILE"
 
-    kubectl cluster-info >/dev/null 2>&1
+cleanup() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Watchdog stopping — killing port-forward..." | tee -a "$LOGFILE"
+    kill "$PF_PID" 2>/dev/null
+    rm -f "$PIDFILE"
+    exit 0
+}
+trap cleanup SIGINT SIGTERM
 
-    if [ $? -ne 0 ]; then
-        echo "Cluster unreachable. Waiting..."
+while true; do
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting port-forward..." | tee -a "$LOGFILE"
+
+    kubectl port-forward "$SERVICE" "$LOCAL_PORT:$REMOTE_PORT" -n "$NAMESPACE" \
+        >> "$LOGFILE" 2>&1 &
+    PF_PID=$!
+
+    # Wait for the tunnel to be ready
+    sleep 3
+
+    # Confirm it's actually listening
+    if ! ss -tlnp | grep -q ":$LOCAL_PORT"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: port-forward failed to bind — retrying in 5s" | tee -a "$LOGFILE"
+        kill "$PF_PID" 2>/dev/null
         sleep 5
         continue
     fi
 
-    echo "$(date) → Starting port-forward..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Tunnel UP on localhost:$LOCAL_PORT (PID $PF_PID)" | tee -a "$LOGFILE"
 
-    kubectl port-forward $SERVICE ${LOCAL_PORT}:${REMOTE_PORT}
+    # Block until port-forward dies
+    wait "$PF_PID"
+    EXIT_CODE=$?
 
-    echo "$(date) → Port-forward crashed. Restarting..."
-    sleep 3
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Port-forward exited (code $EXIT_CODE) — restarting in 2s..." | tee -a "$LOGFILE"
+    sleep 2
 done
-✅ Run in Background (Recommended)
-nohup ./pf-prometheus.sh > pf.log 2>&1 &
+EOF
 
-Check logs:
-
-tail -f pf.log
-
-Stop later:
-
-ps aux | grep pf-prometheus
-kill <PID>
-⭐ Research-Grade Tip (Important)
-
-Your collector should never assume port-forward is alive.
-
-Add retry logic:
-
-requests.get(url, timeout=2)
-
-with retries — otherwise you lose samples during reconnect windows.
-
-**Access Method (Better Than Port-Forward):**
-Instead of constantly port-forwarding, change the Prometheus service to `NodePort`:
-```bash
-kubectl edit svc prometheus-kube-prometheus-prometheus -n monitoring
+chmod +x /mnt/shared/k3s-monitoring-setup/pf-watchdog.sh
 ```
-Change `type: ClusterIP` to `type: NodePort`. Now, you can access the Prometheus API at `http://192.168.56.10:<nodeport>`. Make sure your python script points to this address.
 
-### 1.2 Tetragon (eBPF Security)
+**Step 2 — Start the watchdog in a dedicated terminal (Terminal 0):**
 
-Tetragon is kernel-level eBPF tracing and consumes memory per node. We use the custom `tetragon-values.yaml` to strict its limit to 400Mi per node.
+> Open a new terminal session on Node 1 **before** starting data collection. Keep it running for the entire pipeline duration.
+
+```bash
+bash /mnt/shared/k3s-monitoring-setup/pf-watchdog.sh
+```
+
+You should see output like:
+```
+[2026-03-19 12:00:01] Watchdog started (PID 4521)
+[2026-03-19 12:00:01] Starting port-forward...
+[2026-03-19 12:00:04] Tunnel UP on localhost:9090 (PID 4529)
+```
+
+**Step 3 — Verify the tunnel is working:**
+
+```bash
+curl -s http://localhost:9090/api/v1/query?query=up | python3 -m json.tool | head -20
+```
+
+Expected: JSON response with `"status": "success"` and all node-exporter targets showing `"1"`.
+
+**Step 4 — Monitor the watchdog log (optional, in another pane):**
+
+```bash
+tail -f /tmp/pf-watchdog.log
+```
+
+**Step 5 — Stop the watchdog** (after data collection is complete):
+
+```bash
+# Send SIGTERM to gracefully shut down both watchdog and port-forward
+kill $(cat /tmp/pf-watchdog.pid)
+```
+
+> **Note:** `PROMETHEUS_URL` in `collect_baseline.py` should remain `http://localhost:9090` — no changes needed.
+
+---
+
+### 4.3 Install Tetragon (eBPF Kernel Tracing)
+
+Tetragon provides kernel-level process execution and network connection events via eBPF. The custom `tetragon-values.yaml` caps memory at 400Mi per node.
+
 ```bash
 helm repo add cilium https://helm.cilium.io
+helm repo update
 helm install tetragon cilium/tetragon \
-  --namespace kube-system -f tetragon-values.yaml
+  --namespace kube-system \
+  -f tetragon-values.yaml
 ```
 
-### 1.3 Apply Tetragon Tracing Policy (Required)
-Forces Tetragon to trace outbound TCP connections for mining port detection.
+Wait for Tetragon DaemonSet to roll out:
 ```bash
-kubectl apply -f tcp-connect-policy.yaml
+kubectl rollout status daemonset/tetragon -n kube-system
 ```
 
 ---
 
-## 2. Dataset Generation Pipeline (Execution Order)
+### 4.4 Apply Tetragon Tracing Policy
 
-To generate the final dataset, strictly follow this execution order across three terminals.
+This policy instructs Tetragon to trace outbound TCP connections — required for mining port detection in `collect_baseline.py`:
 
-### build this image for crash loop fault
+```bash
+kubectl apply -f tcp-connect-policy.yaml
+```
 
-1️⃣ Create Crash-Loop Image
+Verify the policy is active:
+```bash
+kubectl get tracingpolicy
+```
 
-Inside your VM.
+---
 
-📁 Create folder
-mkdir -p crash-loop-image
-cd crash-loop-image
-📄 Dockerfile
+## 5. Phase 3 — Build Custom Docker Images
 
-Create:
+Three custom images are required for fault injection. They must be built inside the VM and imported into k3s's containerd (k3s does **not** use the Docker daemon for scheduling).
 
-nano Dockerfile
+> **All build commands run on Node 1** unless a fault targets a specific worker node. Import must happen on every node that will run the image.
 
-Paste:
+---
 
-FROM alpine:latest
+### 5.1 `crash-loop-stress:latest`
 
-RUN apk add --no-cache stress-ng
+Used by: `fault-crash-loop.yaml`, `background-pressure.yaml`
 
-CMD ["/bin/sh"]
+```bash
+# Build context is in docker_builds/crash-loop-image/
+cd k3s-monitoring-setup/docker_builds/crash-loop-image/
 
-Save.
-
-✅ 2️⃣ Build Image (Inside VM)
 docker build -t crash-loop-stress:latest .
-✅ 3️⃣ Import Image Into k3s (IMPORTANT)
 
-k3s uses containerd, not Docker.
-
-So run:
-
+# Import into k3s containerd (run on EACH node that needs it)
 docker save crash-loop-stress:latest | sudo k3s ctr images import -
+```
 
-Verify:
-
+Verify import:
+```bash
 sudo k3s ctr images list | grep crash-loop
+# Expected: crash-loop-stress:latest
+```
 
-You should see:
+---
 
-crash-loop-stress:latest
+### 5.2 `suspicious-network:latest`
 
-plus Build inside VM
+Used by: `fault-network-chaos.yaml`, `security-suspicious-network.yaml`
+
+```bash
+cd k3s-monitoring-setup/docker_builds/security-suspicious-image/
+
 docker build -t suspicious-network:latest .
-Import into k3s
 docker save suspicious-network:latest | sudo k3s ctr images import -
+```
 
 Verify:
-
+```bash
 sudo k3s ctr images list | grep suspicious
+```
 
-Step 1 — Create Image Directory
+---
 
-Inside VM (or on your build machine):
+### 5.3 `security-tmp-exec:latest`
 
-mkdir security-tmp-exec-image
-cd security-tmp-exec-image
+Used by: `security-tmp-exec.yaml`
 
-> **Note:** the repository already contains the payload script and a proper `Dockerfile` (the older `.dockerfile` file is just the shell script content). If you copy the contents manually follow the steps below, otherwise you can simply run `docker build` in this folder.
+The image contains a polymorphic payload script (`run.sh`) that simulates execution from `/tmp`, `/dev/shm`, and `/var/tmp` — traced by Tetragon.
 
-✅ Step 2 — Payload Script (Moved From YAML)
+```bash
+cd k3s-monitoring-setup/docker_builds/security-tmp-exec-image/
 
-Create (if you didn't clone the repository or want to inspect):
-
-nano run.sh
-📄 run.sh
-#!/bin/sh
-
-echo "Simulating malicious execution from ${EXEC_PATH}..."
-
-TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
-
-mkdir -p ${EXEC_PATH}
-
-while true; do
-
-  # Random filename (polymorphic payload)
-  RAND=$RANDOM
-  SCRIPT="${EXEC_PATH}/bad_${RAND}.sh"
-
-  echo "#!/bin/sh" > $SCRIPT
-  echo "echo Malicious execution id $RAND" >> $SCRIPT
-  echo "echo RANDOM_VALUE=$RANDOM" >> $SCRIPT
-
-  chmod +x $SCRIPT
-
-  # Execute payload
-  $SCRIPT
-
-  ###################################
-  # Occasional network beacon/payload
-  ###################################
-  if [ $((RANDOM % 4)) -eq 0 ]; then
-      TARGET=$(echo $TARGETS | tr ' ' '\n' | shuf -n1)
-      echo "Fetching remote payload from $TARGET"
-      wget -q --timeout=2 http://$TARGET/payload.sh -O /dev/null || true
-  fi
-
-  # Random execution interval
-  sleep $((RANDOM % EXEC_INTERVAL + 1))
-
-done
-
-Make executable:
-
-chmod +x run.sh
-✅ Step 3 — Dockerfile
-
-Create:
-
-nano Dockerfile
-📄 Dockerfile
-FROM alpine:latest
-
-RUN apk add --no-cache wget coreutils
-
-COPY run.sh /run.sh
-
-RUN chmod +x /run.sh
-
-ENTRYPOINT ["/run.sh"]
-✅ Step 4 — Build Image (Inside VM)
 docker build -t security-tmp-exec:latest .
-✅ Step 5 — Import Into k3s
 docker save security-tmp-exec:latest | sudo k3s ctr images import -
+```
 
 Verify:
-
+```bash
 sudo k3s ctr images list | grep security-tmp
+```
 
-### Terminal 1: Start Normal Workloads
-Deploy the standard background noise (Nginx, Redis, APIs).
+> **Important:** For faults injected on worker nodes, you must also import images on those nodes. Run the `docker save ... | sudo k3s ctr images import -` command on `sw-wk2` and `sw-wk3` as well (copy images via `scp` or repeat the build).
+
+---
+
+## 6. Phase 4 — Node Role Labels (Edge Simulation)
+
+Workload YAMLs use `nodeSelector` to pin each service to a specific node, creating **heterogeneous per-node baselines** — a key characteristic of real edge clusters where different nodes do different jobs.
+
+> **This is a one-time setup step. Run on Node 1:**
+
+```bash
+# Control plane — acts as the state broker / coordinator
+kubectl label node k3s-wk1 edge-role=coordinator
+
+# Worker 1 — acts as the data processing compute node
+kubectl label node sw-wk2 edge-role=compute
+
+# Worker 2 — acts as the HTTP sensor data ingestion gateway
+kubectl label node sw-wk3 edge-role=sensor-gateway
+```
+
+Verify:
+```bash
+kubectl get nodes --show-labels | grep edge-role
+```
+
+| Workload | Pinned To | Reason |
+|---|---|---|
+| `redis-baseline` | `k3s-wk1` (coordinator) | State / message broker |
+| `api-baseline` | `sw-wk2` (compute) | Data processing API |
+| `nginx-baseline` | `sw-wk3` (sensor-gateway) | HTTP ingestion endpoint |
+| `background-pressure` | `sw-wk2`, `sw-wk3` (workers only) | Workers have headroom; control plane is already >50% |
+
+> **Warning:** If these labels are missing when you run `run_normal_baseline.sh`, the pinned deployments (`nginx`, `api`, `redis`) will stay in `Pending` state indefinitely.
+
+---
+
+## 7. Phase 5 — Run the Data Collection Pipeline
+
+Open **three separate terminal sessions** on Node 1 and run each step in order.
+
+---
+
+### Terminal 1 — Start Normal Baseline Workloads
+
 ```bash
 cd workloads
 bash run_normal_baseline.sh
 ```
 
-### Terminal 2: Start Telemetry Collection
-Start the python script to continuously pull Prometheus + Tetragon metrics and write them to `node_metrics.csv`.
+This deploys: `background-pressure` (workers only) → `nginx-baseline` → `redis-baseline` → `api-baseline` → `cron-logger` → `traffic-generator`.
 
-*If you are still using port-forwarding instead of NodePort, ensure you use the correct ports:*
+Wait for everything to be `Running`:
 ```bash
-kubectl port-forward svc/prometheus-grafana 3000:80 -n monitoring
-kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090 -n monitoring
+kubectl get pods -o wide
 ```
-*(Your Python script `collect_baseline.py` must query `http://localhost:9090/api/v1/query`, not 8080!)*
-```bash
-# In another tab
-cd k3s-monitoring-setup
-pip install requests
-python collect_baseline.py
-```
-*Leave this running!*
 
-### Terminal 3: Inject Anomalies (Scenario Runner)
-While `collect_baseline.py` is safely gathering data in Terminal 2, run the automated scenario injector. This will deploy faults (CPU stress, OOM loops) and security anomalies (/tmp execution), logging their exact start/end timestamps to `scenario_labels.csv`.
+Leave this running. Move to Terminal 2.
+
+---
+
+### Terminal 2 — Start Telemetry Collection
+
+This script continuously pulls Prometheus and Tetragon metrics every 10 seconds and writes them to `dataset/node_metrics_<run_id>.csv`.
+
 ```bash
 cd workloads
 python scenario_runner.py
 ```
-*Wait for this script to finish (~30 mins).*
-*Once finished, you can safely `Ctrl+C` terminate Terminal 2 (`collect_baseline.py`).*
+
+> `scenario_runner.py` automatically launches `collect_baseline.py` as a background process, so you don't need to start it manually. It will:
+> 1. Start `collect_baseline.py` in the background (linked to the run ID)
+> 2. Run through all anomaly scenarios in randomized order
+> 3. Terminate `collect_baseline.py` after all scenarios complete
+
+**Scenario timeline (approximate):**
+
+| Phase | Duration |
+|---|---|
+| Initial normal baseline | 3 min |
+| Per anomaly: active fault | ~2 min |
+| Per anomaly: transition buffer | 1 min |
+| Between anomalies: normal baseline | 2 min |
+| **Total (8 anomalies)** | **~45 min** |
+
+The script writes two files to `dataset/`:
+- `node_metrics_<run_id>.csv` — raw telemetry (Prometheus + Tetragon)
+- `scenario_labels_<run_id>.csv` — ground-truth fault windows with timestamps
+
+> **Anomaly types injected:** `cpu_stress`, `memory_leak`, `network_chaos`, `crash_loop`, `edge_network_flap`, `security_tmp_exec`, `security_high_process`, `security_suspicious_network`
 
 ---
 
-## 3. Labeling the Dataset
+### Terminal 3 — Monitor Progress (Optional)
 
-You now have raw unlabelled telemetry (`node_metrics.csv`) and a master list of incident windows (`scenario_labels.csv`).
+Watch pods appear and disappear as faults are injected:
+```bash
+watch -n 5 kubectl get pods -o wide
+```
 
-To combine them into a ML-ready format, use the labeling script:
+Watch collector output:
+```bash
+tail -f dataset/node_metrics_*.csv
+```
+
+---
+
+### Stopping the Pipeline
+
+If you need to stop mid-run:
+```bash
+# Stop scenario runner (Terminal 2): Ctrl+C
+
+# Clean up any stuck fault pods
+kubectl delete pods -l role=fault-injection --grace-period=0 --force
+
+# Stop baseline workloads (Terminal 1)
+cd workloads
+bash stop_normal_baseline.sh
+```
+
+---
+
+## 8. Phase 6 — Label the Dataset
+
+After the scenario runner completes, you have raw telemetry and time-window labels in `dataset/`. The labeling script merges them into a single ML-ready CSV.
 
 ```bash
 cd k3s-monitoring-setup
 python label_dataset.py
 ```
 
-### Note on Time Adjustments (Padding)
-`label_dataset.py` automatically implements "Time Padding" to prevent inconsistencies:
-- **Start Padding (+10s)**: It ignores the first 10 seconds of a fault to allow time for the anomaly (like a slow memory leak) to actually manifest in the system metrics.
-- **End Padding (+15s)**: It extends the anomaly label for 15 seconds after the fault is deleted, ensuring residual CPU/Network spikes during "cluster recovery" aren't mistakenly labeled as normal data.
+**Output:** `final_labeled_dataset.csv`
 
-**Output:** `final_labeled_dataset.csv` (Ready for ML Training).
+### How Labeling Works
+
+The script joins `node_metrics_<run_id>.csv` with `scenario_labels_<run_id>.csv` on timestamp ranges, with two time padding adjustments:
+
+| Padding | Duration | Reason |
+|---|---|---|
+| **Start padding** | +10s | Lets slow anomalies (e.g. memory leaks) ramp up before labeling starts |
+| **End padding** | +15s | Captures residual spikes during cluster recovery after fault deletion |
+
+Labels in the final dataset:
+
+| Label | Meaning |
+|---|---|
+| `normal` | Clean baseline activity |
+| `cpu_stress` / `memory_leak` / ... | Active fault window |
+| `edge_network_flap` | Inter-node link degradation fault |
+| `security_tmp_exec` / `security_suspicious_network` / ... | Security anomaly window |
+| `transition` | Monitoring gap or cluster instability — excluded from training |
 
 ---
 
-## Inference Node & Deployment
+## 9. Phase 7 — Inference Deployment
 
-To reserve a node for inference (label one node):
+After offline training, deploy the inference pod to worker nodes only.
 
+Label the worker nodes for inference targeting:
 ```bash
-kubectl label node <node-name> role=inference
+kubectl label node sw-wk2 role=inference
+kubectl label node sw-wk3 role=inference
 ```
 
-Deploy the example inference manifest:
-
+Deploy the inference pod:
 ```bash
 kubectl apply -f workloads/inference-deployment.yaml
 ```
 
-The sample deployment will use `nodeSelector: role: inference` and resource requests/limits to keep inference isolated.
+The inference pod:
+- Queries Prometheus every 10s (same interval as training data)
+- Maintains a sliding window of metrics
+- Runs LSTM forward pass (CPU-only, `torch.no_grad()`, batch size 1)
+- Emits Kubernetes Events when anomaly is detected or drift is flagged
+
+Monitor inference events:
+```bash
+kubectl get events --field-selector reason=AnomalyDetected
+```
+
+---
+
+## 10. Verification & Health Checks
+
+### Check Cluster Health
+```bash
+kubectl get nodes
+kubectl top nodes     # requires metrics-server
+```
+
+### Check Monitoring Stack
+```bash
+kubectl get pods -n monitoring
+kubectl get pods -n kube-system | grep tetragon
+```
+
+### Check Prometheus is Scraping
+```bash
+# Via NodePort (replace <port> with your NodePort)
+curl http://192.168.56.10:<port>/api/v1/query?query=up
+```
+
+Expected: all three node-exporter targets show `"value": [<ts>, "1"]`.
+
+### Check Tetragon is Receiving Events
+```bash
+kubectl logs -n kube-system ds/tetragon -c export-stdout --tail=20
+```
+
+You should see JSON lines with `process_exec` or `process_kprobe` events.
+
+### Check Node Labels
+```bash
+kubectl get nodes --show-labels | grep edge-role
+```
+
+### Check Background Pressure (Workers Only)
+```bash
+kubectl get pods -l app=background-pressure -o wide
+# Expected: 2 pods — one on sw-wk2, one on sw-wk3
+```
+
+### Validate Dataset Output
+```bash
+# Check CSV headers include edge simulation columns
+head -1 dataset/node_metrics_*.csv
+
+# Expected headers include:
+# ..., net_internal_bytes_in, net_internal_bytes_out, last_successful_scrape_age_sec, ...
+
+# Count rows per label
+python3 -c "
+import csv
+from collections import Counter
+with open('k3s-monitoring-setup/final_labeled_dataset.csv') as f:
+    labels = [row['label'] for row in csv.DictReader(f)]
+print(Counter(labels))
+"
+```
+
+---
+
+## 11. Troubleshooting
+
+### Pods stuck in `Pending`
+```bash
+kubectl describe pod <pod-name>
+```
+**Likely cause:** Missing `edge-role` node label. Re-run the label commands in [Phase 4](#6-phase-4--node-role-labels-edge-simulation).
+
+### `collect_baseline.py` shows 0.0 for all metrics
+Prometheus likely isn't reachable. Verify:
+```bash
+curl http://localhost:9090/api/v1/query?query=up
+```
+If NodePort is used, check the port mapping: `kubectl get svc -n monitoring`.
+
+### Tetragon logs show no events
+The `tcp-connect-policy.yaml` may not be applied. Run:
+```bash
+kubectl apply -f k3s-monitoring-setup/tcp-connect-policy.yaml
+kubectl get tracingpolicy
+```
+
+### `edge_network_flap` fault pod fails to start
+The pod needs `NET_ADMIN` capability and `hostNetwork: true`. If it's failing, check:
+```bash
+kubectl describe pod -l app=fault-network-flap
+```
+Common issue: `iproute2` installs slowly on first run — the pod may take 30–60s before `tc` is available. This is expected.
+
+### Image pull errors (`ErrImageNeverPull`)
+The custom images must be imported into k3s containerd on each node that will run them. See [Phase 3](#5-phase-3--build-custom-docker-images) for import commands. Verify with:
+```bash
+sudo k3s ctr images list | grep -E "crash-loop|suspicious|security-tmp"
+```
+
+### Clock drift causing dataset misalignment
+```bash
+timedatectl status    # Run on all nodes
+```
+If `System clock synchronized: no`, re-run the time sync setup in [Phase 1.3](#33-prevent-time-drift-all-3-nodes).
+
+---
+
+*Last updated: 2026-03-19 | Cluster: k3s v1.x | Monitoring: kube-prometheus-stack + Tetragon*

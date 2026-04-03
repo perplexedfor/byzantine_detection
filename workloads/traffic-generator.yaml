@@ -41,10 +41,11 @@ spec:
 
           while true; do
 
-            # occasional quiet period (~20% probability)
-            if [ $((RANDOM % 5)) -eq 0 ]; then
-              echo "Quiet period..."
-              sleep $((RANDOM % 15 + 5))
+            # Edge simulation: quarterly quiet periods (~33% probability, 20-80s silence)
+            # This makes normal-class data non-stationary, matching edge burst patterns.
+            if [ $((RANDOM % 3)) -eq 0 ]; then
+              echo "Quiet period (edge idle window)..."
+              sleep $((RANDOM % 60 + 20))
             fi
 
             # steady normal traffic

@@ -14,14 +14,12 @@ spec:
         app: byzantine-operator
     spec:
       serviceAccountName: byzantine-operator
-      # ── Force scheduling onto the control-plane node only ──────────────────
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: "node-role.kubernetes.io/control-plane"
           operator: "Exists"
           effect: "NoSchedule"
-      # ───────────────────────────────────────────────────────────────────────
       containers:
       - name: operator
         image: byzantine-detector:v2

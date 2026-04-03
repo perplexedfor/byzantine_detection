@@ -22,30 +22,65 @@ MODEL_PATH      = "ml/lstm_model.pth"
 SCALER_PATH     = "ml/scaler.pkl"
 THRESHOLD_PATH  = "ml/threshold.txt"
 
-SEQUENCE_LENGTH = 20
+SEQUENCE_LENGTH = 30
 BATCH_SIZE      = 64
 EPOCHS          = 300   # val loss still declining at 100 → more epochs needed
 LEARNING_RATE   = 0.001
 HIDDEN_SIZE     = 64
 LATENT_DIM      = 16
 NOISE_STD       = 0.01    # denoising augmentation applied to training input
+FEATURE_WEIGHTS = torch.tensor([
+    1.0,   # avg_cpu
+    1.0,   # avg_mem
+    1.0,   # net_bytes_in
+    1.0,   # net_bytes_out
+    1.0,   # net_internal_bytes_in
+    1.0,   # net_internal_bytes_out
+    1.5,   # exec_count
+    1.5,   # unique_process_count
+    2.0,   # tmp_exec_count
+    2.0,   # outbound_connect_count
+    4.0,   # mining_port_count ← near-zero normally, spike = critical
+])
+
+SPARSE_INDICES = [6, 7, 8, 9, 10]
+
+def weighted_mse(recon, target, weights):
+    # (B, seq, features) - weight per feature dimension
+    sq_err = (recon - target) ** 2  # (B, seq, f)
+    weighted = sq_err * weights.to(sq_err.device)
+    return weighted.mean()
+
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 class LSTMAutoencoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim=64, latent_dim=16):
+    def __init__(self, input_dim, hidden_dim=64, latent_dim=16, sparse_indices=None):
         super().__init__()
+        self.sparse_indices = sparse_indices
         self.encoder_lstm  = nn.LSTM(input_dim, hidden_dim, batch_first=True)
         self.hidden2latent = nn.Linear(hidden_dim, latent_dim)
         self.latent2hidden = nn.Linear(latent_dim, hidden_dim)
         self.decoder_lstm  = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
         self.output_layer  = nn.Linear(hidden_dim, input_dim)
-
+        
+        if sparse_indices:
+            n_sparse = len(sparse_indices)
+            self.sparse_branch = nn.Sequential(
+                nn.Linear(n_sparse, 16),
+                nn.ReLU(),
+                nn.Linear(16, n_sparse)
+            )
     def forward(self, x):
         _, (h_n, _) = self.encoder_lstm(x)
         latent  = self.hidden2latent(h_n[-1])
         h_dec   = self.latent2hidden(latent).unsqueeze(1).repeat(1, x.shape[1], 1)
         dec_out, _ = self.decoder_lstm(h_dec)
-        return self.output_layer(dec_out)
+        recon = self.output_layer(dec_out)
+        
+        if self.sparse_indices:
+            sparse_in = x[:, :, self.sparse_indices]
+            recon[:,:,self.sparse_indices] += self.sparse_branch(sparse_in)
+        return recon    
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def add_noise(X, std):
@@ -56,13 +91,21 @@ def make_loader(X_in, X_target, batch_size, shuffle):
     ds = TensorDataset(torch.FloatTensor(X_in), torch.FloatTensor(X_target))
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
 
-def recon_error(model, X_np):
-    """Mean-absolute-error per window, shape (N,)"""
+# def recon_error(model, X_np):
+#     """Mean-absolute-error per window, shape (N,)"""
+#     model.eval()
+#     with torch.no_grad():
+#         t = torch.FloatTensor(X_np)
+#         recon = model(t)
+#         return torch.mean(torch.abs(recon - t), dim=(1, 2)).numpy()
+
+def recon_error(model, X_np, weights):
     model.eval()
     with torch.no_grad():
         t = torch.FloatTensor(X_np)
         recon = model(t)
-        return torch.mean(torch.abs(recon - t), dim=(1, 2)).numpy()
+        w = weights.to(recon.device)
+        return torch.mean(torch.abs(recon - t)*w,dim=(1,2)).numpy()
 
 # ── Training ──────────────────────────────────────────────────────────────────
 def train():
@@ -92,7 +135,7 @@ def train():
     val_loader   = make_loader(X_val,         X_val,         BATCH_SIZE, shuffle=False)
 
     # 3. Model, loss, optimiser
-    model     = LSTMAutoencoder(n_features, HIDDEN_SIZE, LATENT_DIM)
+    model     = LSTMAutoencoder(n_features, HIDDEN_SIZE, LATENT_DIM, sparse_indices=SPARSE_INDICES)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     # ReduceLROnPlateau: only halves LR when val loss doesn't improve for
@@ -110,7 +153,8 @@ def train():
         t_loss = 0.0
         for x_in, x_tgt in train_loader:
             optimizer.zero_grad()
-            loss = criterion(model(x_in), x_tgt)
+            #loss = criterion(model(x_in), x_tgt)
+            loss = weighted_mse(model(x_in), x_tgt, FEATURE_WEIGHTS)
             loss.backward()
             optimizer.step()
             t_loss += loss.item()
@@ -121,7 +165,7 @@ def train():
         v_loss = 0.0
         with torch.no_grad():
             for x_in, x_tgt in val_loader:
-                v_loss += criterion(model(x_in), x_tgt).item()
+                v_loss += weighted_mse(model(x_in), x_tgt, FEATURE_WEIGHTS).item()
         v_loss /= len(val_loader)
 
         scheduler.step(v_loss)   # ReduceLROnPlateau watches val loss
@@ -142,7 +186,7 @@ def train():
     # 5. Compute anomaly threshold on val set using best model
     print("\nComputing anomaly threshold on validation set …")
     model.load_state_dict(torch.load(MODEL_PATH, weights_only=True))
-    errors = recon_error(model, X_val)
+    errors = recon_error(model, X_val, FEATURE_WEIGHTS)
 
     mean_e, std_e = np.mean(errors), np.std(errors)
     # Use 4σ with a floor — fixed 0-100 scaling makes val errors very small,

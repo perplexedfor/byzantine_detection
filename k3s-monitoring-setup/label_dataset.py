@@ -122,7 +122,9 @@ def main():
             if 'label' not in fieldnames:
                 fieldnames.insert(1, 'label')
             # Add the metadata columns
-            for col in ['run_id', 'fault_order_hash', 'intensity_seed']:
+            for col in ['run_id', 'fault_order_hash', 'intensity_seed',
+                        'net_internal_bytes_in', 'net_internal_bytes_out',
+                        'last_successful_scrape_age_sec']:
                 if col not in fieldnames:
                     fieldnames.append(col)
                     

@@ -14,6 +14,10 @@ spec:
       labels:
         app: api-baseline
     spec:
+      # Edge simulation: API acts as compute node (data processing)
+      # Run: kubectl label node sw-wk2 edge-role=compute
+      nodeSelector:
+        edge-role: compute
       containers:
       - name: api
         image: python:3.9-slim

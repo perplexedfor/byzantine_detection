@@ -14,6 +14,10 @@ spec:
       labels:
         app: nginx-baseline
     spec:
+      # Edge simulation: Nginx acts as sensor-gateway (HTTP data ingestion endpoint)
+      # Run: kubectl label node sw-wk3 edge-role=sensor-gateway
+      nodeSelector:
+        edge-role: sensor-gateway
       containers:
       - name: nginx
         image: nginx:alpine

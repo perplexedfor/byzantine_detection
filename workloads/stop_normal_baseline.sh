@@ -18,3 +18,9 @@ k3s kubectl delete -f redis-deployment.yaml --ignore-not-found
 k3s kubectl delete -f nginx-deployment.yaml --ignore-not-found
 
 echo "Normal baseline activity stopped."
+
+# Stop background pressure DaemonSet last
+echo "Stopping background pressure DaemonSet..."
+k3s kubectl delete -f background-pressure.yaml --ignore-not-found
+
+echo "All workloads stopped."

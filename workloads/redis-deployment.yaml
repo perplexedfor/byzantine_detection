@@ -14,6 +14,10 @@ spec:
       labels:
         app: redis-baseline
     spec:
+      # Edge simulation: Redis acts as coordinator (state broker)
+      # Run: kubectl label node k3s-wk1 edge-role=coordinator
+      nodeSelector:
+        edge-role: coordinator
       containers:
       - name: redis
         image: redis:alpine

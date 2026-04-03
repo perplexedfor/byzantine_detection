@@ -5,13 +5,16 @@ import subprocess
 import requests
 import sys
 import os
+import threading
+import queue
 from datetime import datetime
 
 # Configuration
 PROMETHEUS_URL = "http://localhost:9090"
-TETRAGON_LOGS_CMD = [
-    "k3s", "kubectl", "logs", "-n", "kube-system", "ds/tetragon", "-c", "export-stdout", "--tail=0", "-f"
-]
+
+# Tetragon is a DaemonSet — one pod per node. We must stream logs from each
+# node's pod individually, otherwise events from worker nodes are silently lost.
+# Node name -> pod-specific log command built at runtime in start_tetragon_streams().
 COLLECTION_INTERVAL_SEC = 10 # 10 second aggregation window
 
 WORKLOADS_BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -55,22 +58,17 @@ def get_prometheus_metric(query):
         result_data = {}
         
         for item in data:
-            # Try multiple strategies to identify the node
             instance_str = item['metric'].get('instance', '')
             instance_ip = instance_str.split(':')[0] if instance_str else ''
             
-            # Strategy 1: Use 'node' label if available (preferred - from Kubernetes)
             node_name = item['metric'].get('node')
             
-            # Strategy 2: Use '__meta_kubernetes_node_name' if present
             if not node_name:
                 node_name = item['metric'].get('__meta_kubernetes_node_name')
-            
-            # Strategy 3: Map known IPs to node names
+        
             if not node_name and instance_ip:
                 node_name = IP_TO_NODE_MAP.get(instance_ip)
             
-            # Strategy 4: Use the instance IP as fallback
             if not node_name:
                 node_name = instance_ip if instance_ip else 'unknown'
             
@@ -93,16 +91,22 @@ def collect_prometheus_metrics():
     cpu_query = '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) by (instance)'
     # avg_mem: (total - available) / total
     mem_query = '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)'
-    # net_bytes_in/out: network receive/transmit bytes rate over 1m for enp0s3 (NAT interface)
+    # net_bytes_in/out: external NAT interface (enp0s3)
     net_in_query = 'rate(node_network_receive_bytes_total{device="enp0s3"}[1m])'
     net_out_query = 'rate(node_network_transmit_bytes_total{device="enp0s3"}[1m])'
+    # net_internal_bytes_in/out: host-only inter-node interface (enp0s8)
+    # Edge simulation: captures inter-node link degradation from fault-network-flap
+    net_internal_in_query = 'rate(node_network_receive_bytes_total{device="enp0s8"}[1m])'
+    net_internal_out_query = 'rate(node_network_transmit_bytes_total{device="enp0s8"}[1m])'
 
     cpu_data, cpu_ok = get_prometheus_metric(cpu_query)
     mem_data, mem_ok = get_prometheus_metric(mem_query)
     net_in_data, net_in_ok = get_prometheus_metric(net_in_query)
     net_out_data, net_out_ok = get_prometheus_metric(net_out_query)
-    
-    # All queries must succeed
+    net_int_in_data, net_int_in_ok = get_prometheus_metric(net_internal_in_query)
+    net_int_out_data, net_int_out_ok = get_prometheus_metric(net_internal_out_query)
+
+    # All primary queries must succeed; internal queries are best-effort
     query_success = cpu_ok and mem_ok and net_in_ok and net_out_ok
 
     return {
@@ -110,6 +114,8 @@ def collect_prometheus_metrics():
         'avg_mem': mem_data,
         'net_bytes_in': net_in_data,
         'net_bytes_out': net_out_data,
+        'net_internal_bytes_in': net_int_in_data,
+        'net_internal_bytes_out': net_int_out_data,
         'query_success': query_success
     }
 
@@ -118,12 +124,16 @@ def map_prom_metrics_to_nodes(prom_metrics):
         'avg_cpu': {},
         'avg_mem': {},
         'net_bytes_in': {},
-        'net_bytes_out': {}
+        'net_bytes_out': {},
+        'net_internal_bytes_in': {},
+        'net_internal_bytes_out': {},
     }
     
     for metric_name, node_data in prom_metrics.items():
         if metric_name == 'query_success':
             continue  # Skip the query_success flag
+        if metric_name not in mapped_metrics:
+            continue  # Skip unknown keys
         for ip, value in node_data.items():
             # Apply mapping if IP is known, otherwise fallback to the IP string
             node_name = IP_TO_NODE_MAP.get(ip, ip)
@@ -215,11 +225,13 @@ def process_tetragon_event(event_line):
                   # Extract port from sock_arg (defined by args type in the TracingPolicy)
                   args = kprobe.get('args', [])
                   for arg in args:
-                      if 'sock_arg' in arg:
-                          dport = arg['sock_arg'].get('dport')
-                          # Check against common crypto-mining stratum/RPC ports
-                          if dport in {3333, 4444, 5555, 6666, 7777, 8332, 8333, 14433, 14444}:
-                              state['mining_port_count'] += 1
+                      # Tetragon may serialize sock type as 'sock_arg', 'sock',
+                      # or expose 'dport' directly at the arg level depending on version.
+                      sock = arg.get('sock_arg') or arg.get('sock') or {}
+                      dport = sock.get('dport') or arg.get('dport')
+                      # Check against common crypto-mining stratum/RPC ports
+                      if dport in {3333, 4444, 5555, 6666, 7777, 8332, 8333, 14433, 14444}:
+                          state['mining_port_count'] += 1
 
         # Very basic syscall tracking based on event type if kprobes are heavily used
         event_type = list(event.keys())[0] if event else "unknown"
@@ -229,6 +241,63 @@ def process_tetragon_event(event_line):
          pass # Ignore non-JSON lines
     except Exception as e:
          print(f"Error parsing event: {e}")
+def start_tetragon_streams(event_queue):
+    """Start one Tetragon log stream per node and feed all events into a shared queue.
+
+    Tetragon is a DaemonSet — each node has its own pod. 'kubectl logs ds/tetragon'
+    only picks ONE pod at random, silently dropping events from all other nodes.
+    Here we discover every tetragon pod and start a dedicated stream for each.
+    A daemon thread per stream feeds lines into the shared queue so the main loop
+    can drain all nodes' events atomically each collection interval.
+    """
+    try:
+        result = subprocess.run(
+            ["k3s", "kubectl", "get", "pods", "-n", "kube-system",
+             "-l", "app.kubernetes.io/name=tetragon",
+             "--no-headers", "-o", "custom-columns=NAME:.metadata.name,NODE:.spec.nodeName"],
+            capture_output=True, text=True, timeout=10
+        )
+        lines = result.stdout.strip().splitlines()
+    except Exception as e:
+        print(f"Could not list Tetragon pods: {e}")
+        return []
+
+    if not lines:
+        print("No Tetragon pods found. Falling back to ds/tetragon (single-node only).")
+        lines_fallback = [("ds/tetragon", "unknown")]
+        pod_node_pairs = lines_fallback
+    else:
+        pod_node_pairs = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 2:
+                pod_node_pairs.append((parts[0], parts[1]))
+
+    processes = {}
+    for pod_name, node_name in pod_node_pairs:
+        cmd = [
+            "k3s", "kubectl", "logs", "-n", "kube-system", pod_name,
+            "-c", "export-stdout", "--tail=0", "-f"
+        ]
+        print(f"Starting Tetragon stream: pod={pod_name} node={node_name}")
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            processes[node_name] = proc
+
+            # Daemon thread: continuously reads lines from this pod's stdout into the queue.
+            # Daemon=True ensures the thread dies automatically when the main process exits.
+            def _reader(p=proc, n=node_name):
+                for line in p.stdout:
+                    if line:
+                        event_queue.put(line)
+
+            t = threading.Thread(target=_reader, daemon=True)
+            t.start()
+        except Exception as e:
+            print(f"Failed to start log stream for {pod_name}: {e}")
+
+    print(f"Streaming Tetragon events from {len(processes)} node(s).")
+    return processes
 
 def main():
     if len(sys.argv) < 2:
@@ -238,14 +307,13 @@ def main():
     run_id = sys.argv[1]
     OUTPUT_CSV = os.path.join(DATASET_DIR, f"node_metrics_{run_id}.csv")
     
-    # 1. Start reading Tetragon logs in the background
-    print("Starting Tetragon log stream...")
-    tetragon_process = subprocess.Popen(
-        TETRAGON_LOGS_CMD, 
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.PIPE,
-        text=True
-    )
+    # 1. Start one Tetragon log stream per node and drain into a shared queue.
+    #    Using ds/tetragon only streams ONE pod's logs — security pods can land
+    #    on any node, so we must explicitly tail every node's Tetragon pod.
+    tetragon_event_queue = queue.Queue()
+    tetragon_processes = start_tetragon_streams(tetragon_event_queue)
+    if not tetragon_processes:
+        print("WARNING: No Tetragon pods found. Tetragon metrics will be 0.")
 
     # 2. Setup CSV Writer
     with open(OUTPUT_CSV, mode='w', newline='') as file:
@@ -253,9 +321,14 @@ def main():
         
         # Define headers
         headers = [
-            'timestamp', 'label', 'node', 
+            'timestamp', 'label', 'node',
             'avg_cpu', 'avg_mem', 'net_bytes_in', 'net_bytes_out',
-            'exec_count', 'unique_process_count', 'tmp_exec_count', 
+            # Edge simulation: enp0s8 inter-node interface metrics
+            'net_internal_bytes_in', 'net_internal_bytes_out',
+            # Edge simulation: seconds since last successful Prometheus scrape
+            # Non-zero values indicate connectivity gaps (edge intermittency signal)
+            'last_successful_scrape_age_sec',
+            'exec_count', 'unique_process_count', 'tmp_exec_count',
             'outbound_connect_count', 'mining_port_count', 'syscall_feature_vector'
         ]
         writer.writerow(headers)
@@ -263,18 +336,34 @@ def main():
         print(f"Collecting baseline metrics every {COLLECTION_INTERVAL_SEC} seconds. Writing to {OUTPUT_CSV}...")
         print("Press Ctrl+C to stop.")
 
+        # Track last successful Prometheus scrape time for the scrape-gap-age feature.
+        # Initialized to now so the first row shows 0 (no gap yet).
+        last_successful_scrape_time = time.time()
+
         try:
             while True:
                 start_time = time.time()
                 
-                # Non-blocking read of Tetragon logs collected during this interval
-                import select
-                while select.select([tetragon_process.stdout], [], [], 0.0)[0]:
-                    line = tetragon_process.stdout.readline()
-                    if line:
-                        process_tetragon_event(line)
-                    else:
+                # Drain all Tetragon events that arrived during the last interval
+                # from the shared queue (fed by per-node daemon reader threads).
+                while not tetragon_event_queue.empty():
+                    try:
+                        event_line = tetragon_event_queue.get_nowait()
+                        process_tetragon_event(event_line)
+                    except queue.Empty:
                         break
+                        
+                # ALARM: Check if any Tetragon eBPF stream has secretly died 
+                # (e.g., due to ring buffer overflow or VM VM-resume timer breaks)
+                dead_nodes = []
+                for node_name, proc in tetragon_processes.items():
+                    if proc.poll() is not None:
+                        dead_nodes.append(node_name)
+                
+                if dead_nodes:
+                    print(f"\n[!!!] CRITICAL: Tetragon eBPF stream DIED for nodes: {', '.join(dead_nodes)}")
+                    print("[!!!] These nodes will show 0 for all exec and network process metrics!")
+                    print("[!!!] FIX: Stop this run, type 'k3s kubectl rollout restart ds/tetragon -n kube-system', wait 30s, and try again.\n")
 
                 # Collect from Prometheus and map IPs to Node names
                 raw_prom_metrics = collect_prometheus_metrics()
@@ -288,14 +377,19 @@ def main():
                 # Use the exact same epoch timestamp format as the scenario_runner
                 current_timestamp = int(time.time())
                 
+                # Update scrape-gap-age tracking
+                metrics_valid, metrics_transition = validate_metrics(raw_prom_metrics, EXPECTED_NODES)
+                if metrics_valid:
+                    last_successful_scrape_time = time.time()
+                scrape_age_sec = int(time.time() - last_successful_scrape_time)
+
                 # Check for transition conditions
                 is_transition = False
-                metrics_valid, metrics_transition = validate_metrics(raw_prom_metrics, EXPECTED_NODES)
                 if metrics_transition:
                     is_transition = True
-                
+
                 # Mark as transition or normal baseline
-                current_label = "transition" if is_transition else "normal" 
+                current_label = "transition" if is_transition else "normal"
 
                 # Write out row per node
                 for node in all_nodes:
@@ -311,6 +405,11 @@ def main():
                         prom_metrics['avg_mem'].get(node_short, 0.0),
                         prom_metrics['net_bytes_in'].get(node_short, 0.0),
                         prom_metrics['net_bytes_out'].get(node_short, 0.0),
+                        # Edge simulation: inter-node link metrics (enp0s8)
+                        prom_metrics['net_internal_bytes_in'].get(node_short, 0.0),
+                        prom_metrics['net_internal_bytes_out'].get(node_short, 0.0),
+                        # Edge simulation: scrape gap age (connectivity intermittency)
+                        scrape_age_sec,
                         t_state.get('exec_count', 0),
                         len(t_state.get('unique_process_count', set())),
                         t_state.get('tmp_exec_count', 0),
@@ -342,7 +441,8 @@ def main():
         except KeyboardInterrupt:
             print("\nStopping data collection.")
         finally:
-            tetragon_process.terminate()
+            for proc in tetragon_processes.values():
+                proc.terminate()
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,61 @@
+# background-pressure.yaml
+# Edge simulation: permanently holds ~100Mi RAM on worker nodes ONLY.
+# Compresses headroom on sw-wk2 (34% → ~38%) and sw-wk3 (24% → ~29%)
+# without touching k3s-wk1 (control plane already >50%, skip it).
+#
+# Requires edge-role labels to be set first:
+#   kubectl label node sw-wk2 edge-role=compute
+#   kubectl label node sw-wk3 edge-role=sensor-gateway
+#
+# Uses crash-loop-stress:latest (already in k3s containerd).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: background-pressure
+  labels:
+    app: background-pressure
+    role: edge-simulation
+spec:
+  selector:
+    matchLabels:
+      app: background-pressure
+  template:
+    metadata:
+      labels:
+        app: background-pressure
+        role: edge-simulation
+    spec:
+      # Only run on worker nodes — control plane is already resource-stressed
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: edge-role
+                    operator: In
+                    values:
+                      - compute          # sw-wk2
+                      - sensor-gateway   # sw-wk3
+
+      containers:
+      - name: pressure
+        image: crash-loop-stress:latest
+        imagePullPolicy: Never
+        command:
+          - /bin/sh
+          - -c
+          - |
+            echo "Starting worker background pressure (100MB RAM, 5% CPU)..."
+            # 100MB steady hold — modest but enough to lift baseline off 0 headroom.
+            # --vm-keep: hold without free/reallocate churn (no extra CPU cost).
+            exec stress-ng \
+              --vm 1 --vm-bytes 80M --vm-keep \
+              --cpu 1 --cpu-load 5 \
+              --timeout 0
+        resources:
+          requests:
+            memory: "100Mi"
+            cpu: "50m"
+          limits:
+            memory: "160Mi"   # 80M vm-bytes + ~25Mi stress-ng overhead + 55Mi safety buffer
+            cpu: "80m"
