@@ -1,17 +1,25 @@
 tetragon:
   resources:
     requests:
-      memory: 200Mi
-      cpu: 100m
+      memory: 160Mi
+      cpu: 100m      # LOWERED 250m → 100m
+                     # Lower request = less CFS slot competition during bursts
     limits:
-      memory: 400Mi
-      cpu: 300m
-
+      memory: 256Mi
+      cpu: 800m      # RAISED 500m → 800m
+                     # Full burst budget; safe with 2 vCPUs per worker (after Fix 1)
 export:
   stdout:
     enabled: true
 
 bpf:
   mapSize:
+    # execve_map at 32768 — kept large to absorb security_high_process bursts.
+    # The map size was not the root cause (stream died even at 32768), but
+    # there's no reason to reduce it since the real fix is CPU headroom.
     execve_map: 32768
-    tcp_map: 32768
+    # tcp_map reduced — only counting connection hits, not storing them.
+    tcp_map: 8192
+
+# tetragon-values.yaml
+

@@ -4,7 +4,7 @@ metadata:
   name: strict-protection
   namespace: default
 spec:
-  intervalSeconds: 5
-  cpuThreshold: 85.0
-  enforcementAction: "cordon"
+  # Controls whether the operator will automatically uncordon 
+  # nodes when their ML trust score recovers.
+  # Set to 'false' if you want a human to manually inspect flagged nodes.
   autoRemediate: true

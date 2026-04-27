@@ -34,9 +34,7 @@ spec:
                   - key: edge-role
                     operator: In
                     values:
-                      - compute          # sw-wk2
-                      - sensor-gateway   # sw-wk3
-
+                      - sensor-gateway
       containers:
       - name: pressure
         image: crash-loop-stress:latest

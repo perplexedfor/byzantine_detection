@@ -1,0 +1,31 @@
+# K3s Lean Server Config — Drop-in for /etc/rancher/k3s/config.yaml on Node 1 (control plane)
+#
+# Place this file BEFORE running the k3s install curl command:
+#   sudo mkdir -p /etc/rancher/k3s
+#   sudo cp k3s-server-config.yaml /etc/rancher/k3s/config.yaml
+#
+# What this disables and why:
+#   traefik      - Ingress controller. Not needed — services are exposed via NodePort.
+#                  Saves ~80MB RAM + prevents Traefik from generating BPF events in Tetragon.
+#   servicelb    - K3s built-in load balancer (Klipper). Not needed — same reason.
+#                  Saves ~30MB RAM per node.
+#   metrics-server - kubectl top nodes/pods add-on. Saves ~30MB on control plane.
+#                  Trade-off: `kubectl top` will NOT work. Use Prometheus instead.
+#
+# Total savings: ~140MB on control plane, ~30MB per worker.
+# This directly reduces the baseline memory footprint so fault signals stand out more clearly.
+
+disable:
+  - traefik
+  - servicelb
+  - metrics-server
+
+# Bind K3s API server to the host-only interface so worker join tokens work correctly
+# (prevents k3s from using the NAT IP which changes on DHCP renewal)
+node-ip: "192.168.56.10"
+
+# Use the host-only interface for flannel overlay networking between nodes
+flannel-iface: "enp0s8"
+
+# Write-kubeconfig-mode makes kubectl usable without sudo after setting KUBECONFIG
+write-kubeconfig-mode: "0644"

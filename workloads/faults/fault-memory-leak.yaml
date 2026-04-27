@@ -27,7 +27,7 @@ spec:
           
           data = []
           leaked_total = 0
-          max_mb = 800
+          max_mb = 350
           
           print("Starting memory leak simulation...")
           print(f"Will leak up to {max_mb} MB")
@@ -52,4 +52,4 @@ spec:
           requests:
             memory: "256Mi"
           limits:
-            memory: "1Gi"  # Increased from 500Mi to accommodate controlled leak
+            memory: "400Mi"  # Capped at 400Mi so OOM killer triggers before node-wide swap thrashing steals CPU/IO

@@ -18,8 +18,10 @@ spec:
       - name: crash-loop
         resources:
           requests:
+            cpu: "100m"
             memory: "64Mi"
           limits:
+            cpu: "0.5"        # 2 replicas × 0.5 = 1.0 vCPU ceiling; preserves Tetragon sidecar headroom
             memory: "256Mi"
         image: crash-loop-stress:latest
         imagePullPolicy: Never

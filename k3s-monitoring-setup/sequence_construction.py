@@ -14,10 +14,11 @@ WINDOW_SIZE = 30
 numeric_cols = [
     'avg_cpu', 'avg_mem', 'net_bytes_in', 'net_bytes_out',
     'net_internal_bytes_in', 'net_internal_bytes_out', 
+    'net_drop_rate',
     'exec_count', 'unique_process_count', 'tmp_exec_count',
     'outbound_connect_count', 'mining_port_count'
 ]
-# We have 11 features
+# We have 12 features
 
 def create_sequences():
     print(f"Loading {INPUT_FILE}...")

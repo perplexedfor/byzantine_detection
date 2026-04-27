@@ -12,6 +12,16 @@ spec:
       labels:
         app: cpu-burner
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - sw-wk2
+                      - sw-wk3
       containers:
         - name: burner
           # Using stress-ng which supports the --cpu-load flag

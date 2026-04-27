@@ -5,8 +5,9 @@ import shutil
 
 import glob
 
-DATASET_DIR = "../dataset"
-OUTPUT_FILE = "final_labeled_dataset.csv"
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+DATASET_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "dataset"))
+OUTPUT_FILE = os.path.join(SCRIPT_DIR, "final_labeled_dataset.csv")
 
 # We now handle transitions explicitly in scenario_runner, so padding is 0 to avoid drift
 START_PADDING_SEC = 0
@@ -121,10 +122,8 @@ def main():
             fieldnames = list(reader.fieldnames)
             if 'label' not in fieldnames:
                 fieldnames.insert(1, 'label')
-            # Add the metadata columns
-            for col in ['run_id', 'fault_order_hash', 'intensity_seed',
-                        'net_internal_bytes_in', 'net_internal_bytes_out',
-                        'last_successful_scrape_age_sec']:
+            # Add metadata columns that come from scenario labels, not from the metrics CSV
+            for col in ['run_id', 'fault_order_hash', 'intensity_seed']:
                 if col not in fieldnames:
                     fieldnames.append(col)
                     

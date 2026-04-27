@@ -36,6 +36,8 @@ spec:
           done
       resources:
         requests:
+          cpu: "100m"
           memory: "128Mi"
         limits:
+          cpu: "0.5"         # Hard cap: fork storms without this consumed 100%+ CPU, stalling Tetragon BPF drain
           memory: "256Mi"

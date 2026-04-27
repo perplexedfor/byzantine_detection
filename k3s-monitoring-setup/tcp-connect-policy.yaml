@@ -3,6 +3,23 @@ kind: TracingPolicy
 metadata:
   name: "tcp-connect"
 spec:
+  # FIX: The previous podSelector used "io.kubernetes.pod.namespace" which is a
+  # CRI-internal annotation, NOT a real Kubernetes pod label. It matched zero pods,
+  # so the kprobe was never attached and outbound_connect_count / mining_port_count
+  # were always 0.
+  #
+  # To scope by namespace without a broken podSelector, either:
+  #   1. Use TracingPolicyNamespaced (kind: TracingPolicyNamespaced) deployed into
+  #      the 'default' namespace — auto-scopes to that namespace only.
+  #   2. Match actual pod labels from your workloads.
+  #
+  # Option 2: match workload pods by their app labels (security + baseline pods).
+  # This avoids tracing host-network system processes (kubectl, containerd, etc.)
+  # that caused event storms on sw-wk2, while still covering all fault/security pods.
+  podSelector:
+    matchExpressions:
+      - key: "app"
+        operator: Exists
   kprobes:
   - call: "tcp_connect"
     syscall: false

@@ -15,7 +15,12 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch", "patch"]
   
-  # 2. Manage Custom Resources (Policy)
+  # 2. Pods — needed to discover Tetragon DaemonSet pods and stream their logs
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  
+  # 3. Manage Custom Resources (Policy)
   - apiGroups: ["security.example.com"]
     resources: ["byzantinepolicies"]
     verbs: ["get", "list", "watch", "patch"]
@@ -23,7 +28,7 @@ rules:
     resources: ["customresourcedefinitions"]
     verbs: ["get", "list", "watch"]
   
-  # 3. Events & Logging
+  # 4. Events & Logging
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]

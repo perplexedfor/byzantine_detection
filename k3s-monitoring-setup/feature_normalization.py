@@ -18,6 +18,7 @@ FEATURE_ORDER_PATH = os.path.join(MODEL_DIR, "feature_order.json")
 numeric_cols = [
     'avg_cpu', 'avg_mem', 'net_bytes_in', 'net_bytes_out',
     'net_internal_bytes_in', 'net_internal_bytes_out', 
+    'net_drop_rate',
     'exec_count', 'unique_process_count', 'tmp_exec_count',
     'outbound_connect_count', 'mining_port_count'
 ]
@@ -45,14 +46,16 @@ def normalize():
     df['split'] = 'test'
     df.loc[df['run_id'].isin(train_runs), 'split'] = 'train'
     
-    # Identify normal data in training runs for fitting the scaler
-    train_normal_mask = (df['split'] == 'train') & (df['label'] == 'normal')
-    train_normal_df = df[train_normal_mask]
+    # Identify all training data for fitting the scaler
+    # This is CRITICAL because features like tmp_exec_count are constant 0 in normal data.
+    # Fitting on normal data only would cause these features to be zeroed out during transform.
+    train_mask = (df['split'] == 'train')
+    train_df = df[train_mask]
     
-    print(f"Fitting scaler on {len(train_normal_df)} normal rows from {len(train_runs)} training runs...")
+    print(f"Fitting scaler on all {len(train_df)} training rows from {len(train_runs)} runs...")
     
     scaler = MinMaxScaler()
-    scaler.fit(train_normal_df[numeric_cols])
+    scaler.fit(train_df[numeric_cols])
     
     # Save scaler
     os.makedirs(MODEL_DIR, exist_ok=True)

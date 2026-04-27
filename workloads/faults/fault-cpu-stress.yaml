@@ -33,6 +33,6 @@ spec:
             cpu: "500m"
             memory: "128Mi"
           limits:
-            cpu: "2"
-            memory: "512Mi"   # increased: 256Mi caused cgroup OOM kills during CPU stress (stress-ng overhead)
+            cpu: "1.0"         # Reduced from 1.5: ensures Tetragon sidecar has ≥0.5 CPU on a 2-vCPU node
+            memory: "512Mi"    # Kept: 256Mi caused cgroup OOM kills during CPU stress (stress-ng overhead)
       restartPolicy: Always

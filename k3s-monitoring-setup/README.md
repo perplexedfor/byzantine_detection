@@ -3,7 +3,7 @@
 ## Table of Contents
 
 1. [Architecture Overview](#1-architecture-overview)
-2. [Phase 0 — Cluster Setup](#2-phase-0--cluster-setup)
+2. [Phase 0 — VirtualBox Cluster Setup](#2-phase-0--virtualbox-cluster-setup)
 3. [Phase 1 — Prerequisites](#3-phase-1--prerequisites)
 4. [Phase 2 — Install Monitoring Stack](#4-phase-2--install-monitoring-stack)
 5. [Phase 3 — Build Custom Docker Images](#5-phase-3--build-custom-docker-images)
@@ -31,7 +31,7 @@
 Workloads (Nginx/Redis/API) + Fault Injector
           ↓ metrics (10s interval)
       Prometheus (NodePort: 9090)
-      Tetragon  (eBPF kernel logs)
+      Tetragon  (eBPF kernel logs — 5 MVS signals)
           ↓
     collect_baseline.py ──→ node_metrics_<run_id>.csv
     scenario_runner.py  ──→ scenario_labels_<run_id>.csv
@@ -45,13 +45,13 @@ Workloads (Nginx/Redis/API) + Fault Injector
 
 ---
 
-## 2. Phase 0 — Cluster Setup
+## 2. Phase 0 — VirtualBox Cluster Setup
 
 > **Skip this phase if your cluster is already running.** Jump to [Phase 1](#3-phase-1--prerequisites).
 
-### 2.1 Fix Static Network (All VMs)
+### 2.1 Fix Static Network (All 3 VMs)
 
-VirtualBox Ubuntu Server VMs reset networking on reboot if cloud-init is managing it. Fix it permanently:
+VirtualBox Ubuntu Server VMs reset networking on reboot if cloud-init is managing it. Fix it permanently.
 
 **Run on every node:**
 
@@ -97,7 +97,30 @@ After reboot, verify: `ip a` — the static IP should persist.
 
 ---
 
-### 2.2 Install k3s on Control Plane (Node 1 only)
+### 2.2 Install K3s on Control Plane (Node 1 only)
+
+This setup uses a **lean K3s config** to disable add-ons that waste ~140 MB RAM and generate BPF noise in Tetragon. The config file must be in place **before** running the install script.
+
+**Step 1 — Drop the lean server config in place:**
+
+```bash
+sudo mkdir -p /etc/rancher/k3s
+
+# Copy from shared mount (adjust path to wherever this repo lives in your VM)
+sudo cp /mnt/shared/k3s-monitoring-setup/k3s-server-config.yaml /etc/rancher/k3s/config.yaml
+```
+
+What this config disables (see `k3s-server-config.yaml` for full comments):
+
+| Add-on | RAM saved | Why disabled |
+|---|---|---|
+| `traefik` | ~80 MB | Not needed — NodePort is used instead |
+| `servicelb` | ~30 MB | Not needed — same reason |
+| `metrics-server` | ~30 MB | Use Prometheus instead of `kubectl top` |
+
+> **Note:** `kubectl top nodes/pods` will NOT work without `metrics-server`. Use Prometheus queries or `kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes` as an alternative.
+
+**Step 2 — Install K3s:**
 
 ```bash
 curl -sfL https://get.k3s.io | sh -s - server \
@@ -105,7 +128,9 @@ curl -sfL https://get.k3s.io | sh -s - server \
   --disable traefik
 ```
 
-Save the cluster join token for the worker nodes:
+> The `--disable traefik` flag is redundant if `k3s-server-config.yaml` is in place, but kept for clarity.
+
+**Step 3 — Save the cluster join token for worker nodes:**
 ```bash
 sudo cat /var/lib/rancher/k3s/server/node-token
 ```
@@ -145,6 +170,14 @@ NAME      STATUS   ROLES                  AGE   VERSION
 k3s-wk1   Ready    control-plane,master   2m    v1.x.x
 sw-wk2    Ready    <none>                 1m    v1.x.x
 sw-wk3    Ready    <none>                 1m    v1.x.x
+```
+
+**Verify that disabled add-ons are NOT running:**
+```bash
+kubectl get pods -n kube-system
+# Expected: NO traefik-* or svclb-* pods
+kubectl get helmchart -n kube-system
+# Expected: traefik and traefik-crd are NOT listed
 ```
 
 ---
@@ -211,7 +244,7 @@ pip install requests
 The custom `prometheus-values.yaml` configures:
 - **10s scrape/evaluation interval** — matches the LSTM training sampling rate
 - **Metric filtering** — only the 4 metric families used by `collect_baseline.py` are kept (reduces memory + TSDB pressure)
-- **Memory limits** — Prometheus: 1.5Gi, Alertmanager: 200Mi, node-exporter: 100Mi
+- **Memory limits** — Prometheus: 700Mi, Alertmanager: 200Mi, node-exporter: 80Mi
 
 ```bash
 # Add repo and create namespace
@@ -341,9 +374,40 @@ kill $(cat /tmp/pf-watchdog.pid)
 
 ---
 
-### 4.3 Install Tetragon (eBPF Kernel Tracing)
+### 4.3 Install Tetragon (eBPF Kernel Tracing — MVS Config)
 
-Tetragon provides kernel-level process execution and network connection events via eBPF. The custom `tetragon-values.yaml` caps memory at 400Mi per node.
+Tetragon provides kernel-level process execution and network connection events via eBPF. The custom `tetragon-values.yaml` is tuned to **minimum viable signals (MVS)** — only the 5 features that are actually used in the LSTM dataset.
+
+**Tetragon signals collected:**
+
+| Signal | CSV Column | What it captures | Used by |
+|---|---|---|---|
+| Process execution count | `exec_count` | Total new processes started per 10s window | LSTM + RF |
+| Unique binaries | `unique_process_count` | Count of distinct executables seen | LSTM + RF |
+| Temp-dir execution | `tmp_exec_count` | Executions from `/tmp` or `/dev/shm` (malware indicator) | LSTM + RF |
+| Outbound TCP connections | `outbound_connect_count` | Total new TCP connects (`tcp_connect` kprobe) | LSTM + RF |
+| Mining port connections | `mining_port_count` | TCP connects to ports 3333, 4444, 5555, 6666, 7777, 8332, 8333, 14433, 14444 | LSTM + RF |
+| Event-type frequency map | `syscall_feature_vector` | JSON: `{"process_exec": N, "process_kprobe": M, ...}` per 10s window | RF only |
+
+> **RF usage for `syscall_feature_vector`:** explode the JSON blob into per-type numeric columns before training:
+> ```python
+> syscall_df = pd.json_normalize(df["syscall_feature_vector"].apply(json.loads)).fillna(0)
+> syscall_df.columns = [f"syscall_{c}" for c in syscall_df.columns]
+> ```
+> Particularly discriminative for `security_tmp_exec` and `security_suspicious_network` fault classes.
+
+**Resource profile (per node):**
+
+| Resource | Before (old config) | After (current config) |
+|---|---|---|
+| Memory request | 200 Mi | 128 Mi |
+| Memory limit | 400 Mi | 256 Mi |
+| CPU request | 100 m | 50 m |
+| CPU limit | 300 m | 150 m |
+| BPF execve_map | 32768 entries | **32768 entries** (unchanged — see note below) |
+| BPF tcp_map | 32768 entries | 8192 entries |
+
+> **Why `execve_map` stays at 32768:** The `security_high_process` fault spawns a burst of processes on `sw-wk2` (compute node). With a smaller map (e.g. 8192), the ring buffer overflows during that fault and the Tetragon log stream on wk-2 **silently dies** — this was the observed wk-2-only failure. It is a ring buffer overflow, not an OOM kill. `tcp_map` can safely be halved since only connection counts are recorded.
 
 ```bash
 helm repo add cilium https://helm.cilium.io
@@ -358,11 +422,25 @@ Wait for Tetragon DaemonSet to roll out:
 kubectl rollout status daemonset/tetragon -n kube-system
 ```
 
+**To apply the MVS config to an existing Tetragon installation:**
+```bash
+helm upgrade tetragon cilium/tetragon \
+  --namespace kube-system \
+  -f tetragon-values.yaml
+kubectl rollout status daemonset/tetragon -n kube-system
+```
+
+After upgrade, verify memory is within MVS limits:
+```bash
+kubectl top pods -n kube-system | grep tetragon
+# Expected: each pod < 200Mi
+```
+
 ---
 
 ### 4.4 Apply Tetragon Tracing Policy
 
-This policy instructs Tetragon to trace outbound TCP connections — required for mining port detection in `collect_baseline.py`:
+This policy instructs Tetragon to trace outbound TCP connections — required for `outbound_connect_count` and `mining_port_count` in `collect_baseline.py`:
 
 ```bash
 kubectl apply -f tcp-connect-policy.yaml
@@ -480,6 +558,27 @@ kubectl get nodes --show-labels | grep edge-role
 
 ## 7. Phase 5 — Run the Data Collection Pipeline
 
+### Load Budget — Why Controlled Traffic Matters
+
+The goal is **30–50k rows** (≈ 28–46 hours of collection at 3 nodes × 10s intervals). For the LSTM to reliably separate fault classes from the normal baseline, the normal class must be stable and low-CPU. The controlled traffic generator enforces this budget:
+
+| Traffic Mode | Steady rate | Peak connections | Effect on normal class |
+|---|---|---|---|
+| **`traffic-generator.yaml`** (full load) | 40 req/s | c=30 burst, 2 replicas | CPU spikes contaminate normal class — avoid for dataset runs |
+| **`traffic-generator-controlled.yaml`** ✅ | 5 req/s | c=2, 1 replica | Workers stay <10% CPU — fault signals are cleanly separable |
+
+**Target CPU budget during normal baseline:**
+
+| Node | Expected baseline CPU | Max acceptable |
+|---|---|---|
+| `k3s-wk1` (control plane) | 15–30% | 40% |
+| `sw-wk2` (compute) | 5–12% | 20% |
+| `sw-wk3` (sensor-gateway) | 5–12% | 20% |
+
+If any node exceeds the max during a normal baseline window, the rows will be noisier and fault detection harder. Stop the pipeline, check for runaway pods, and restart.
+
+---
+
 Open **three separate terminal sessions** on Node 1 and run each step in order.
 
 ---
@@ -491,11 +590,24 @@ cd workloads
 bash run_normal_baseline.sh
 ```
 
-This deploys: `background-pressure` (workers only) → `nginx-baseline` → `redis-baseline` → `api-baseline` → `cron-logger` → `traffic-generator`.
+This deploys: `background-pressure` (workers only) → `nginx-baseline` → `redis-baseline` → `api-baseline` → `cron-logger` → **controlled traffic generator** (see next step).
 
 Wait for everything to be `Running`:
 ```bash
 kubectl get pods -o wide
+```
+
+**Important — use the controlled traffic generator** for dataset collection:
+```bash
+# Apply controlled generator INSTEAD of the default traffic-generator.yaml
+kubectl apply -f workloads/traffic-generator-controlled.yaml
+```
+
+Verify CPU stays within budget before starting collection:
+```bash
+# Wait 60s for load to stabilize, then check
+sleep 60 && kubectl top nodes
+# Expected: workers < 10% CPU
 ```
 
 Leave this running. Move to Terminal 2.
@@ -527,10 +639,12 @@ python scenario_runner.py
 | **Total (8 anomalies)** | **~45 min** |
 
 The script writes two files to `dataset/`:
-- `node_metrics_<run_id>.csv` — raw telemetry (Prometheus + Tetragon)
+- `node_metrics_<run_id>.csv` — raw telemetry (Prometheus + Tetragon, **no syscall_feature_vector column**)
 - `scenario_labels_<run_id>.csv` — ground-truth fault windows with timestamps
 
 > **Anomaly types injected:** `cpu_stress`, `memory_leak`, `network_chaos`, `crash_loop`, `edge_network_flap`, `security_tmp_exec`, `security_high_process`, `security_suspicious_network`
+
+**Dataset target:** Run the scenario pipeline **3–4 times** with different random seeds to reach 30–50k rows. Each run produces ~3k rows (3 nodes × ~1000 samples/45 min).
 
 ---
 
@@ -544,6 +658,12 @@ watch -n 5 kubectl get pods -o wide
 Watch collector output:
 ```bash
 tail -f dataset/node_metrics_*.csv
+```
+
+Check row count progress:
+```bash
+# Count rows across all collected CSVs (subtract 1 header per file)
+wc -l dataset/node_metrics_*.csv
 ```
 
 ---
@@ -629,7 +749,17 @@ kubectl get events --field-selector reason=AnomalyDetected
 ### Check Cluster Health
 ```bash
 kubectl get nodes
-kubectl top nodes     # requires metrics-server
+# Note: kubectl top nodes requires metrics-server (disabled in lean config)
+# Use Prometheus instead: curl http://localhost:9090/api/v1/query?query=node_memory_MemAvailable_bytes
+```
+
+### Verify K3s Lean Config (Add-Ons Disabled)
+```bash
+kubectl get pods -n kube-system
+# Expected: NO traefik-* or svclb-* pods
+
+kubectl get helmchart -n kube-system
+# Expected: traefik and traefik-crd are NOT listed
 ```
 
 ### Check Monitoring Stack
@@ -638,10 +768,16 @@ kubectl get pods -n monitoring
 kubectl get pods -n kube-system | grep tetragon
 ```
 
+### Check Tetragon Memory (MVS Config)
+```bash
+kubectl top pods -n kube-system | grep tetragon
+# Expected: each tetragon pod < 200Mi (MVS config limit is 256Mi)
+```
+
 ### Check Prometheus is Scraping
 ```bash
-# Via NodePort (replace <port> with your NodePort)
-curl http://192.168.56.10:<port>/api/v1/query?query=up
+# Via port-forward (watchdog must be running)
+curl http://localhost:9090/api/v1/query?query=up
 ```
 
 Expected: all three node-exporter targets show `"value": [<ts>, "1"]`.
@@ -666,11 +802,14 @@ kubectl get pods -l app=background-pressure -o wide
 
 ### Validate Dataset Output
 ```bash
-# Check CSV headers include edge simulation columns
+# Check CSV headers — should include syscall_feature_vector at the end
 head -1 dataset/node_metrics_*.csv
 
-# Expected headers include:
-# ..., net_internal_bytes_in, net_internal_bytes_out, last_successful_scrape_age_sec, ...
+# Expected headers:
+# timestamp,label,node,avg_cpu,avg_mem,net_bytes_in,net_bytes_out,
+# net_internal_bytes_in,net_internal_bytes_out,last_successful_scrape_age_sec,
+# exec_count,unique_process_count,tmp_exec_count,outbound_connect_count,mining_port_count,
+# syscall_feature_vector
 
 # Count rows per label
 python3 -c "
@@ -680,6 +819,18 @@ with open('k3s-monitoring-setup/final_labeled_dataset.csv') as f:
     labels = [row['label'] for row in csv.DictReader(f)]
 print(Counter(labels))
 "
+
+# Target: 30,000–50,000 total rows, normal class should be 40–60% of total
+```
+
+### Verify Controlled Traffic Load
+```bash
+# Confirm traffic generator is in controlled mode
+kubectl get deployment traffic-generator -o jsonpath='{.spec.replicas}'
+# Expected: 1 (controlled = 1 replica; full-load = 2 replicas)
+
+kubectl get pods -l variant=controlled
+# Expected: 1 pod running
 ```
 
 ---
@@ -706,6 +857,69 @@ kubectl apply -f k3s-monitoring-setup/tcp-connect-policy.yaml
 kubectl get tracingpolicy
 ```
 
+### Tetragon stream silently dies or produces 0s on `sw-wk2` only
+
+**Root cause: `export-stdout` sidecar CPU throttle, not OOM or ring buffer size.**
+
+`sw-wk2` is the `compute` node — it runs `api-baseline` and receives `security_high_process` and `security_suspicious_network` fault injections. These generate hundreds of events/sec. When the export-stdout sidecar hits its CPU limit, it can't drain the BPF ring buffer fast enough → Tetragon drops events → stream output slows to zero.
+
+**Critically: `kubectl logs -f` stays alive** (`proc.poll() == None`) so the original dead-stream detector was completely blind to this. The updated `collect_baseline.py` now also runs a **stall detector** that triggers if a stream produces no events for >60s:
+```
+[!!!] WARNING: Tetragon stream STALLED (alive but silent >60s) on: sw-wk2
+[!!!] Likely cause: export-stdout sidecar CPU-throttled under fault burst.
+```
+
+**Three fixes applied (all already in the current config):**
+
+| Fix | What changed | Effect |
+|---|---|---|
+| **1. Namespace-scoped TracingPolicy** | `tcp-connect-policy.yaml` added `podSelector` for `default` + `kube-system` only | Cuts ~60–70% of tcp_connect event volume by ignoring host processes (containerd, sshd, kubectl, etc.) |
+| **2. Higher CPU limit** | `tetragon-values.yaml` CPU limit: `150m → 500m` | export-stdout sidecar has enough headroom to drain bursts without stalling |
+| **3. Stall detector** | `collect_baseline.py` tracks `last_event_time` per node | Catches silent hangs that `proc.poll()` misses |
+
+**Diagnosis:**
+```bash
+# Is the Tetragon pod alive? (alive ≠ stream working)
+kubectl get pods -n kube-system -o wide | grep tetragon
+
+# Is the stream actually producing events?
+kubectl logs -n kube-system <tetragon-pod-on-wk2> -c export-stdout --tail=5
+# If no output for >30s during active workloads → stalled.
+
+# Check CPU throttle events for the Tetragon pod
+kubectl describe pod -n kube-system <tetragon-pod-on-wk2> | grep -A5 "Limits\|Throttling"
+```
+
+**Recovery (if stall still occurs despite fixes):**
+```bash
+kubectl rollout restart daemonset/tetragon -n kube-system
+kubectl rollout status daemonset/tetragon -n kube-system
+# Wait 30s, then restart collect_baseline.py with the same run_id
+```
+
+---
+
+### Tetragon pods using too much memory
+If Tetragon pods exceed 256Mi after the MVS upgrade, the BPF ring buffers may still be holding old map sizes. Force a full rollout:
+```bash
+helm upgrade tetragon cilium/tetragon --namespace kube-system -f k3s-monitoring-setup/tetragon-values.yaml
+kubectl rollout restart daemonset/tetragon -n kube-system
+kubectl rollout status daemonset/tetragon -n kube-system
+```
+
+### Traefik or ServiceLB still running after lean install
+The `k3s-server-config.yaml` must be in `/etc/rancher/k3s/config.yaml` **before** K3s is installed or restarted. If K3s was already installed:
+```bash
+# Verify the config is in place
+cat /etc/rancher/k3s/config.yaml
+
+# Restart K3s to apply the config (will briefly interrupt the cluster)
+sudo systemctl restart k3s
+
+# Verify add-ons are gone
+kubectl get helmchart -n kube-system
+```
+
 ### `edge_network_flap` fault pod fails to start
 The pod needs `NET_ADMIN` capability and `hostNetwork: true`. If it's failing, check:
 ```bash
@@ -725,6 +939,19 @@ timedatectl status    # Run on all nodes
 ```
 If `System clock synchronized: no`, re-run the time sync setup in [Phase 1.3](#33-prevent-time-drift-all-3-nodes).
 
+### Normal baseline CPU too high (>20% on workers before faults)
+```bash
+# Check which pods are consuming CPU
+kubectl top pods -o wide
+
+# If traffic-generator is in full-load mode, switch it:
+kubectl delete deployment traffic-generator
+kubectl apply -f workloads/traffic-generator-controlled.yaml
+
+# Wait 60s, then re-check
+sleep 60 && kubectl top nodes
+```
+
 ---
 
-*Last updated: 2026-03-19 | Cluster: k3s v1.x | Monitoring: kube-prometheus-stack + Tetragon*
+*Last updated: 2026-04-11 | Cluster: k3s v1.x | Monitoring: kube-prometheus-stack + Tetragon (MVS)*

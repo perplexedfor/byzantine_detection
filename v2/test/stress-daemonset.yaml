@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cpu-burner
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: cpu-burner
+  template:
+    metadata:
+      labels:
+        app: cpu-burner
+    spec:
+      containers:
+        - name: burner
+          # Using the exact image from your dataset collection
+          image: polinux/stress
+          # Exactly matches simulation/stress-worker2.yaml
+          command: ["stress"]
+          args: ["--cpu", "4", "--vm", "1", "--vm-bytes", "128M", "--timeout", "86400s"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "128Mi"
+            limits:
+              cpu: "2000m"
+              memory: "256Mi"

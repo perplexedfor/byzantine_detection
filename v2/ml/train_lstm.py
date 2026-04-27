@@ -1,12 +1,14 @@
 """
 ml/train_lstm.py
 ----------------
-Trains an LSTM Autoencoder on preprocessed "normal" windows.
-Run ml/preprocess.py FIRST to generate dataset/processed/*.npy
+Trains an LSTM Autoencoder on preprocessed normal windows from the
+k3s labeled dataset (11 features, 30-step sliding windows).
+
+Run  ml/preprocess.py  FIRST to generate dataset/processed/*.npy
 
 Saves:
-    ml/lstm_model.pth    — best checkpoint (lowest val loss)
-    ml/threshold.txt     — anomaly decision boundary (mean+3σ on val set)
+    ml/lstm_model.pth    â€” best checkpoint (lowest val loss)
+    ml/threshold.txt     â€” anomaly decision boundary (mean+4Ïƒ on val set)
 """
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -16,7 +18,7 @@ import numpy as np
 import os
 import joblib
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# â”€â”€ Configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 PROCESSED_DIR   = "dataset/processed"
 MODEL_PATH      = "ml/lstm_model.pth"
 SCALER_PATH     = "ml/scaler.pkl"
@@ -24,26 +26,27 @@ THRESHOLD_PATH  = "ml/threshold.txt"
 
 SEQUENCE_LENGTH = 30
 BATCH_SIZE      = 64
-EPOCHS          = 300   # val loss still declining at 100 → more epochs needed
+EPOCHS          = 100   
 LEARNING_RATE   = 0.001
 HIDDEN_SIZE     = 64
-LATENT_DIM      = 16
-NOISE_STD       = 0.01    # denoising augmentation applied to training input
+LATENT_DIM      = 8
+NOISE_STD       = 0.03    # Increased for better generalization on wider distributions
 FEATURE_WEIGHTS = torch.tensor([
-    1.0,   # avg_cpu
-    1.0,   # avg_mem
+    5.0,   # avg_cpu (boosted)
+    5.0,   # avg_mem (boosted)
     1.0,   # net_bytes_in
     1.0,   # net_bytes_out
     1.0,   # net_internal_bytes_in
     1.0,   # net_internal_bytes_out
-    1.5,   # exec_count
-    1.5,   # unique_process_count
-    2.0,   # tmp_exec_count
-    2.0,   # outbound_connect_count
-    4.0,   # mining_port_count ← near-zero normally, spike = critical
+    2.0,   # net_drop_rate
+    5.0,   # exec_count
+    5.0,   # unique_process_count
+    10.0,  # tmp_exec_count
+    10.0,  # outbound_connect_count
+    20.0,  # mining_port_count
 ])
 
-SPARSE_INDICES = [6, 7, 8, 9, 10]
+SPARSE_INDICES = [6, 7, 8, 9, 10, 11]
 
 def weighted_mse(recon, target, weights):
     # (B, seq, features) - weight per feature dimension
@@ -51,10 +54,40 @@ def weighted_mse(recon, target, weights):
     weighted = sq_err * weights.to(sq_err.device)
     return weighted.mean()
 
+# class LSTMAutoencoder(nn.Module):
+#     def __init__(self, input_dim, hidden_dim=64, latent_dim=16, sparse_indices=None):
+#         super().__init__()
+#         self.sparse_indices = sparse_indices
+#         self.encoder_lstm  = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+#         self.hidden2latent = nn.Linear(hidden_dim, latent_dim)
+#         self.latent2hidden = nn.Linear(latent_dim, hidden_dim)
+#         self.decoder_lstm  = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
+#         self.output_layer  = nn.Linear(hidden_dim, input_dim)
+        
+#         if sparse_indices:
+#             n_sparse = len(sparse_indices)
+#             self.sparse_branch = nn.Sequential(
+#                 nn.Linear(n_sparse, 4),
+#                 nn.ReLU(),
+#                 nn.Linear(4, n_sparse)
+#             )
 
-# ── Model ─────────────────────────────────────────────────────────────────────
+#     def forward(self, x):
+#         enc_out, _ = self.encoder_lstm(x)
+#         context = enc_out.mean(dim=1)   # <-- Using Mean Pooling for comparison
+#         latent  = self.hidden2latent(context)
+#         h_dec   = self.latent2hidden(latent).unsqueeze(1).repeat(1, x.shape[1], 1)
+#         dec_out, _ = self.decoder_lstm(h_dec)
+#         recon = self.output_layer(dec_out)
+        
+#         if self.sparse_indices:
+#             sparse_in = x[:, :, self.sparse_indices]
+#             recon[:, :, self.sparse_indices] += self.sparse_branch(sparse_in)
+
+#         return recon
+# ——————————————————————————————————————————————————————————————————————————————
 class LSTMAutoencoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim=64, latent_dim=16, sparse_indices=None):
+    def __init__(self, input_dim, hidden_dim=64, latent_dim=8, sparse_indices=None):
         super().__init__()
         self.sparse_indices = sparse_indices
         self.encoder_lstm  = nn.LSTM(input_dim, hidden_dim, batch_first=True)
@@ -66,9 +99,9 @@ class LSTMAutoencoder(nn.Module):
         if sparse_indices:
             n_sparse = len(sparse_indices)
             self.sparse_branch = nn.Sequential(
-                nn.Linear(n_sparse, 16),
+                nn.Linear(n_sparse, 4),
                 nn.ReLU(),
-                nn.Linear(16, n_sparse)
+                nn.Linear(4, n_sparse)
             )
     def forward(self, x):
         _, (h_n, _) = self.encoder_lstm(x)
@@ -82,7 +115,7 @@ class LSTMAutoencoder(nn.Module):
             recon[:,:,self.sparse_indices] += self.sparse_branch(sparse_in)
         return recon    
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ——————————————————————————————————————————————————————————————————————————————
 def add_noise(X, std):
     return (X + np.random.normal(0, std, X.shape)).astype(np.float32)
 
@@ -105,9 +138,13 @@ def recon_error(model, X_np, weights):
         t = torch.FloatTensor(X_np)
         recon = model(t)
         w = weights.to(recon.device)
-        return torch.mean(torch.abs(recon - t)*w,dim=(1,2)).numpy()
+        # Using MSE (Mean Squared Error) which won the sweep
+        # Squaring the error heavily penalizes massive security spikes
+        sq_err = ((recon - t) ** 2) * w
+        return torch.mean(sq_err, dim=(1, 2)).numpy()
 
-# ── Training ──────────────────────────────────────────────────────────────────
+
+# ——————————————————————————————————————————————————————————————————————————————
 def train():
     # 1. Load preprocessed data
     train_path = os.path.join(PROCESSED_DIR, "X_train.npy")
@@ -189,13 +226,12 @@ def train():
     errors = recon_error(model, X_val, FEATURE_WEIGHTS)
 
     mean_e, std_e = np.mean(errors), np.std(errors)
-    # Use 4σ with a floor — fixed 0-100 scaling makes val errors very small,
-    # but live data has natural drift (network jitter, memory GC, etc.)
-    # Real anomalies produce loss >> 0.1 (evaluate.py confirms), so 0.05 is safe.
-    threshold     = max(mean_e + 4 * std_e, 0.05)
+    # Use 97th percentile: This targets a ~3% False Positive Rate on normal data.
+    # This "lighter" threshold is better suited for MSE scoring to boost recall.
+    threshold = np.percentile(errors, 97)
 
     print(f"  Val MAE  mean={mean_e:.6f}  std={std_e:.6f}")
-    print(f"  Threshold (max of mean+4s, 0.02) = {threshold:.6f}")
+    print(f"  Threshold (97th percentile) = {threshold:.6f}")
 
     with open(THRESHOLD_PATH, "w") as f:
         f.write(str(threshold))

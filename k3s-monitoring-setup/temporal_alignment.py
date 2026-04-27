@@ -13,6 +13,7 @@ MAX_GAP_FILL = 3  # Forward fill up to 30 seconds of missing data
 numeric_cols = [
     'avg_cpu', 'avg_mem', 'net_bytes_in', 'net_bytes_out',
     'net_internal_bytes_in', 'net_internal_bytes_out', 
+    'net_drop_rate',
     'exec_count', 'unique_process_count', 'tmp_exec_count',
     'outbound_connect_count', 'mining_port_count'
 ]

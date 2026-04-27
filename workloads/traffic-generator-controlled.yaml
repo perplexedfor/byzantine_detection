@@ -1,0 +1,73 @@
+# traffic-generator-controlled.yaml
+# Controlled load variant for DATASET COLLECTION RUNS.
+# Use this INSTEAD of traffic-generator.yaml when collecting the 30-50k row dataset.
+#
+# Why controlled load matters:
+#   The original traffic-generator.yaml runs at 40 req/s with c=30 spike bursts.
+#   With 2 replicas hitting both nginx and api, peak load reaches ~160 req/s.
+#   This causes CPU spikes in the normal-class data that the LSTM cannot distinguish
+#   from fault-injected anomalies, reducing model accuracy.
+#
+# This variant targets:
+#   - Steady normal load: 5 req/s, 2 concurrent connections (per service, 1 replica)
+#   - NO spike bursts during collection — spikes are injected by fault scenarios only
+#   - Workers stay at < 10% CPU baseline (leaves clear headroom for fault signals)
+#
+# Usage:
+#   kubectl apply -f workloads/traffic-generator-controlled.yaml
+#   # Verify baseline CPU stays < 10%:
+#   kubectl top nodes
+#
+# After dataset collection is done, switch back if needed:
+#   kubectl delete -f workloads/traffic-generator-controlled.yaml
+#   kubectl apply -f workloads/traffic-generator.yaml
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-generator
+  labels:
+    app: traffic-generator
+    variant: controlled
+spec:
+  replicas: 1     # was 2 — single replica reduces exec_count noise in Tetragon
+  selector:
+    matchLabels:
+      app: traffic-generator
+  template:
+    metadata:
+      labels:
+        app: traffic-generator
+        variant: controlled
+    spec:
+      containers:
+      - name: hey
+        image: williamyeh/hey:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting controlled traffic generator (dataset collection mode)..."
+
+          while true; do
+            # Quiet period simulation: ~25% probability, 15-45s gap
+            # Keeps some non-stationarity in normal class without large CPU spikes
+            if [ $((RANDOM % 4)) -eq 0 ]; then
+              echo "Quiet period..."
+              sleep $((RANDOM % 30 + 15))
+            fi
+
+            # Steady low load: 5 req/s, 2 concurrent per service
+            # was: -q 40 -c 5 (40 req/s, 5 concurrent), 2 replicas = 160 req/s peak
+            hey -z 30s -q 5 -c 2 http://nginx-baseline-svc:80/ > /dev/null 2>&1 &
+            hey -z 30s -q 5 -c 2 http://api-baseline-svc:8080/ > /dev/null 2>&1 &
+
+            wait
+          done
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "20m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"

@@ -6,6 +6,7 @@ import os
 import random
 import uuid
 import hashlib
+import json
 
 # Define paths to workloads based on current directory structure
 WORKLOADS_BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -29,8 +30,18 @@ ALL_ANOMALIES = [
 ]
 
 # We will dynamically create the output dataset folder
-DATASET_DIR = os.path.join(WORKLOADS_BASE_DIR, "../dataset")
-os.makedirs(DATASET_DIR, exist_ok=True)
+# Use local disk (/tmp) during collection to avoid Shared Folder I/O stalls.
+FINAL_DATASET_DIR = os.path.normpath(os.path.join(WORKLOADS_BASE_DIR, "../dataset"))
+os.makedirs(FINAL_DATASET_DIR, exist_ok=True)
+
+if os.name != 'nt':
+    # Avoid /tmp to prevent interfering with security anomaly detection (tmp-exec)
+    COLLECTION_DIR = os.path.expanduser("~/k3s_data_collection")
+else:
+    COLLECTION_DIR = FINAL_DATASET_DIR
+
+os.makedirs(COLLECTION_DIR, exist_ok=True)
+DATASET_DIR = COLLECTION_DIR
 
 def run_kubectl(action, file_path):
     """Run k3s kubectl apply or delete"""
@@ -71,6 +82,40 @@ def apply_workload(file_path, target_node="all", params=None):
 
 def delete_workload(file_path):
     run_kubectl("delete", file_path)
+
+def wait_for_nodes_ready(timeout_sec=300):
+    """Wait until all nodes in the cluster are in the 'Ready' state."""
+    print(f"Waiting for nodes to stabilize (timeout: {timeout_sec}s)...")
+    start_wait = time.time()
+    while time.time() - start_wait < timeout_sec:
+        try:
+            result = subprocess.run(
+                ["k3s", "kubectl", "get", "nodes", "-o", "json"],
+                capture_output=True, text=True, check=True
+            )
+            nodes = json.loads(result.stdout).get("items", [])
+            all_ready = True
+            for node in nodes:
+                status = "NotReady"
+                for cond in node.get("status", {}).get("conditions", []):
+                    if cond.get("type") == "Ready":
+                        status = "True" if cond.get("status") == "True" else "False"
+                        break
+                
+                if status != "True":
+                    print(f"  - Node {node['metadata']['name']} is still {status}...")
+                    all_ready = False
+            
+            if all_ready:
+                print("All nodes are Ready.")
+                return True
+        except Exception as e:
+            print(f"Error checking node status: {e}")
+        
+        time.sleep(10)
+    
+    print("TIMEOUT: Nodes did not recover to Ready state.")
+    return False
 
 def main():
     print("Starting Automated Scenario Runner")
@@ -127,9 +172,19 @@ def main():
             
             target_node = "all"
             if filepath:
-                # Pick a random worker node for the attack
-                target_node = random.choice(["k3s-wk1", "sw-wk2", "sw-wk3"])
-                print(f"Target Node Selected: {target_node}")
+                # Fault-aware node affinity:
+                # CPU/RAM-heavy faults → sw-wk3 only (sensor-gateway role is more stable
+                # under high BPF event load; wk-2 Tetragon sidecar saturates first).
+                # Light I/O faults → random wk2 or wk3 (safe for BPF ring buffer).
+                # k3s-wk1 is excluded — it runs etcd + API server (control plane).
+                HEAVY_FAULTS = {"cpu_stress", "memory_leak", "crash_loop", "security_high_process"}
+                LIGHT_NODE_POOL = ["sw-wk2", "sw-wk3"]
+
+                if label in HEAVY_FAULTS:
+                    target_node = "sw-wk3"
+                else:
+                    target_node = random.choice(LIGHT_NODE_POOL)
+                print(f"Target Node Selected: {target_node} (affinity: {'heavy→wk3' if label in HEAVY_FAULTS else 'light→random'})")  
                 
                 # Generate random parameters based on the label
                 params = {}
@@ -161,7 +216,7 @@ def main():
                     }
                 elif label == "security_high_process":
                     params = {
-                        "{{SPAWN_COUNT}}": random.randint(10, 40) # REDUCED from [20,100]
+                        "{{SPAWN_COUNT}}": random.randint(10, 25) # Capped: >25 forks/s overwhelms BPF ring buffer on wk-2
                     }
                 elif label == "security_suspicious_network":
                     # Randomize destination ports to simulate beaconing vs mining
@@ -200,9 +255,11 @@ def main():
                 
                 # 60 second buffer to ensure cleanup finishes and memory is reclaimed
                 # Record explicitly as 'transition' buffer
-                print("Waiting 60 seconds for cleanup and memory reclamation (recording as 'transition' buffer)...")
+                # Wait for nodes to return to Ready state instead of a blind sleep.
+                # This ensures RCU stalls or OOM scenarios have cleared.
+                print("Verifying node health and waiting for recovery (recording as 'transition' buffer)...")
                 trans_start = time.time()
-                time.sleep(60) 
+                wait_for_nodes_ready(timeout_sec=300) 
                 trans_end = time.time()
                 writer.writerow([int(trans_start), int(trans_end), "transition", "all", run_id, fault_order_hash, intensity_seed])
             
@@ -214,6 +271,21 @@ def main():
     print("Terminating background metric collection process...")
     collect_process.terminate()
     collect_process.wait()
+    
+    # Sync labels and metrics from local collection dir to final project dataset folder
+    if COLLECTION_DIR != FINAL_DATASET_DIR:
+        print(f"Syncing collected data to {FINAL_DATASET_DIR}...")
+        import shutil
+        try:
+            for f in os.listdir(COLLECTION_DIR):
+                if f.startswith(f"scenario_labels_{run_id}") or f.startswith(f"node_metrics_{run_id}"):
+                    src = os.path.join(COLLECTION_DIR, f)
+                    dst = os.path.join(FINAL_DATASET_DIR, f)
+                    shutil.copy2(src, dst)
+                    print(f"  ✓ Copied: {f}")
+        except Exception as e:
+            print(f"Error syncing data: {e}")
+            
     print(f"Successfully generated dataset segment for run {run_id}")
 
 if __name__ == "__main__":
