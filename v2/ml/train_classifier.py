@@ -1,4 +1,4 @@
-﻿"""
+"""
 ml/train_classifier.py
 ----------------------
 Trains a Random Forest classifier for Byzantine fault detection
@@ -263,7 +263,7 @@ def main():
 
             threshold = float(open(lstm_threshold_path).read().strip())
             n_feat = len(base_features)
-            model = LSTMAutoencoder(n_feat, 64, 16, sparse_indices=[6,7,8,9,10,11])
+            model = LSTMAutoencoder(n_feat, 64, 8, sparse_indices=[6,7,8,9,10,11])
             model.load_state_dict(torch.load("ml/lstm_model.pth", weights_only=True))
             model.eval()
 
@@ -274,9 +274,8 @@ def main():
                 t = torch.FloatTensor(X_t)
                 recon = model(t)
                 w = FEATURE_WEIGHTS.to(recon.device)
-                # Match train_lstm.py aggregation: max of temporal mean error
-                mae_per_step = torch.mean(torch.abs(recon - t) * w, dim=2)
-                errors = torch.max(mae_per_step, dim=1)[0].numpy()
+                sq_err = ((recon - t) ** 2) * w
+                errors = torch.mean(sq_err, dim=(1, 2)).numpy()
             y_true_bin = np.where(y_t == "normal", 0, 1)
             y_pred_bin_lstm = (errors > threshold).astype(int)
 

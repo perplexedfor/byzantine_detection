@@ -25,8 +25,8 @@ VAL_DATA_PATH   = "dataset/processed/X_val.npy"
 # Feature weights (must match train_lstm.py)
 FEATURE_WEIGHTS = torch.tensor([
     5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 2.0,   # cpu/mem boosted, net_drop 2x
-    5.0, 5.0,                          # exec counts
-    10.0, 10.0,                        # security
+    20.0, 20.0,                          # exec counts
+    50.0, 10.0,                        # security
     20.0,                              # mining_port
 ])
 
@@ -43,24 +43,15 @@ class LSTMAutoencoder(nn.Module):
         self.decoder_lstm  = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
         self.output_layer  = nn.Linear(hidden_dim, input_dim)
 
-        if sparse_indices:
-            n_sparse = len(sparse_indices)
-            self.sparse_branch = nn.Sequential(
-                nn.Linear(n_sparse, 4),
-                nn.ReLU(),
-                nn.Linear(4, n_sparse)
-            )
-
     def forward(self, x):
-        _, (h_n, _) = self.encoder_lstm(x)
-        latent  = self.hidden2latent(h_n[-1])
+        enc_out, _ = self.encoder_lstm(x)
+        context = enc_out.mean(dim=1)  # Mean Pooling
+        latent  = self.hidden2latent(context)
         h_dec   = self.latent2hidden(latent).unsqueeze(1).repeat(1, x.shape[1], 1)
         dec_out, _ = self.decoder_lstm(h_dec)
         recon = self.output_layer(dec_out)
 
-        if self.sparse_indices:
-            sparse_in = x[:, :, self.sparse_indices]
-            recon[:, :, self.sparse_indices] += self.sparse_branch(sparse_in)
+        # sparse_branch removed
         return recon
 # class LSTMAutoencoder(nn.Module):
 #     def __init__(self, input_dim, hidden_dim=64, latent_dim=16, sparse_indices=None):

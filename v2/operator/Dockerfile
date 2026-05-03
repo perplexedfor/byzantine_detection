@@ -9,22 +9,21 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy Operator Code
 COPY v2/operator/main.py .
 
-# Copy ML Artifacts (Structure must match script expectations)
-# Script expects: v2/ml/lstm_model.pth
-RUN mkdir -p v2/ml/ml
-COPY v2/ml/ml/lstm_model.pth v2/ml/ml/
-COPY v2/ml/ml/scaler.pkl v2/ml/ml/
-COPY v2/ml/ml/rf_binary.pkl v2/ml/ml/
-COPY v2/ml/ml/threshold.txt v2/ml/ml/
+# Copy ML Artifacts
+RUN mkdir -p v2/ml
+COPY v2/ml/lstm_model.pth v2/ml/
+COPY v2/ml/scaler.pkl v2/ml/
+COPY v2/ml/rf_binary.pkl v2/ml/
+COPY v2/ml/threshold.txt v2/ml/
 
 # Debug: Verify files exist during build
 RUN ls -R /app/v2/ml
 
 # Environment Variables
-ENV MODEL_PATH=v2/ml/ml/lstm_model.pth
-ENV SCALER_PATH=v2/ml/ml/scaler.pkl
-ENV THRESHOLD_PATH=v2/ml/ml/threshold.txt
-ENV RF_MODEL_PATH=v2/ml/ml/rf_binary.pkl
+ENV MODEL_PATH=v2/ml/lstm_model.pth
+ENV SCALER_PATH=v2/ml/scaler.pkl
+ENV THRESHOLD_PATH=v2/ml/threshold.txt
+ENV RF_MODEL_PATH=v2/ml/rf_binary.pkl
 # Disable buffering for logs
 ENV PYTHONUNBUFFERED=1
 

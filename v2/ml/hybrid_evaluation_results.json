@@ -1,0 +1,161 @@
+{
+  "comparison": {
+    "hybrid": {
+      "acc": 0.9874407582938388,
+      "prec": 0.991216298645846,
+      "rec": 0.9894057476863127,
+      "f1": 0.9903101956243524,
+      "fpr": 0.01618705035971223,
+      "tp": 8125.0,
+      "fp": 72.0,
+      "tn": 4376.0,
+      "fn": 87.0
+    },
+    "ae_only": {
+      "acc": 0.6088467614533966,
+      "prec": 0.9963459196102314,
+      "rec": 0.39844130540672185,
+      "f1": 0.5692414752957551,
+      "fpr": 0.002697841726618705,
+      "tp": 3272.0,
+      "fp": 12.0,
+      "tn": 4436.0,
+      "fn": 4940.0
+    },
+    "rf_only": {
+      "acc": 0.9881516587677726,
+      "prec": 0.9923058133854421,
+      "rec": 0.9894057476863127,
+      "f1": 0.9908536585365854,
+      "fpr": 0.014163669064748202,
+      "tp": 8125.0,
+      "fp": 63.0,
+      "tn": 4385.0,
+      "fn": 87.0
+    }
+  },
+  "per_fault_hybrid": {
+    "security_tmp_exec": {
+      "detected": 918,
+      "total": 923,
+      "rate": 0.9945828819068255
+    },
+    "security_suspicious_network": {
+      "detected": 1174,
+      "total": 1181,
+      "rate": 0.9940728196443692
+    },
+    "cpu_stress": {
+      "detected": 1201,
+      "total": 1208,
+      "rate": 0.9942052980132451
+    },
+    "security_high_process": {
+      "detected": 935,
+      "total": 940,
+      "rate": 0.9946808510638298
+    },
+    "crash_loop": {
+      "detected": 608,
+      "total": 610,
+      "rate": 0.9967213114754099
+    },
+    "memory_leak": {
+      "detected": 1314,
+      "total": 1321,
+      "rate": 0.9947009841029523
+    },
+    "edge_network_flap": {
+      "detected": 1151,
+      "total": 1186,
+      "rate": 0.9704890387858347
+    },
+    "network_chaos": {
+      "detected": 824,
+      "total": 843,
+      "rate": 0.9774614472123369
+    }
+  },
+  "cordon_results": {
+    "correct_cordons": 6837,
+    "false_cordons": 805,
+    "total_anomaly_windows": 8393,
+    "total_normal_windows": 4627
+  },
+  "detection_latency": {
+    "cpu_stress": {
+      "episodes": 39,
+      "detected": 39,
+      "missed": 0,
+      "mean_s": 2.051282051282051,
+      "min_s": 0.0,
+      "max_s": 30.0
+    },
+    "crash_loop": {
+      "episodes": 36,
+      "detected": 36,
+      "missed": 0,
+      "mean_s": 0.5555555555555556,
+      "min_s": 0.0,
+      "max_s": 10.0
+    },
+    "edge_network_flap": {
+      "episodes": 43,
+      "detected": 43,
+      "missed": 0,
+      "mean_s": 3.7209302325581395,
+      "min_s": 0.0,
+      "max_s": 20.0
+    },
+    "memory_leak": {
+      "episodes": 36,
+      "detected": 36,
+      "missed": 0,
+      "mean_s": 1.9444444444444444,
+      "min_s": 0.0,
+      "max_s": 30.0
+    },
+    "network_chaos": {
+      "episodes": 36,
+      "detected": 36,
+      "missed": 0,
+      "mean_s": 5.277777777777778,
+      "min_s": 0.0,
+      "max_s": 40.0
+    },
+    "security_high_process": {
+      "episodes": 38,
+      "detected": 38,
+      "missed": 0,
+      "mean_s": 1.3157894736842104,
+      "min_s": 0.0,
+      "max_s": 10.0
+    },
+    "security_suspicious_network": {
+      "episodes": 38,
+      "detected": 38,
+      "missed": 0,
+      "mean_s": 1.8421052631578947,
+      "min_s": 0.0,
+      "max_s": 10.0
+    },
+    "security_tmp_exec": {
+      "episodes": 36,
+      "detected": 36,
+      "missed": 0,
+      "mean_s": 0.8333333333333333,
+      "min_s": 0.0,
+      "max_s": 10.0
+    }
+  },
+  "config": {
+    "trust_decay_rf_only": -2.0,
+    "trust_decay_ae_only": -15.0,
+    "trust_decay_both": -25.0,
+    "trust_reward_normal": 4.0,
+    "trust_cordon_below": 40.0,
+    "trust_uncordon_above": 60.0,
+    "grace_period_ticks": 5,
+    "ae_threshold": 0.055489844977855675
+  }
+}

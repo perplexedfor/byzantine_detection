@@ -25,7 +25,7 @@ import json
 from collections import defaultdict
 
 # â”€â”€ Paths (relative to v2/) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-DATASET_PATH   = os.path.join("..","..", "k3s-monitoring-setup", "final_labeled_dataset.csv")
+DATASET_PATH   = os.path.join("..", "k3s-monitoring-setup", "final_labeled_dataset.csv")
 MODEL_PATH     = "ml/lstm_model.pth"
 SCALER_PATH    = "ml/scaler.pkl"
 THRESHOLD_PATH = "ml/threshold.txt"
@@ -46,22 +46,23 @@ BYTE_IDX = [2, 3, 4, 5]
 SEQ_LEN = 30
 SPARSE_INDICES = [6, 7, 8, 9, 10, 11]
 
-# Trust config (must match operator)
-# Redesigned for Dual-Brain Architecture:
-# - RF handles infrastructure (Moderate penalty)
-# - AE handles security/novelty (Severe penalty)
-TRUST_DECAY_RF   = -5.0
-TRUST_DECAY_AE   = -15.0   # Extreme penalty for security/zero-day
-TRUST_DECAY_BOTH = -25.0   # Catastrophic
-TRUST_REWARD     = +5.0
+# Trust config (must match operator/main.py exactly)
+# - RF handles infrastructure (low-confidence single-model — low penalty)
+# - AE handles security/novelty (high-confidence novel signal — severe penalty)
+TRUST_DECAY_RF   = -2.0    # RF flags only (main.py: TRUST_DECAY_RF_ONLY)
+TRUST_DECAY_AE   = -15.0   # AE flags only (security/zero-day novelty)
+TRUST_DECAY_BOTH = -25.0   # Both flag     (catastrophic)
+TRUST_REWARD     = +4.0    # Both normal   (main.py: TRUST_REWARD_NORMAL)
 TRUST_INITIAL    = 100.0
-TRUST_CORDON     = 40.0
+TRUST_CORDON     = 40.0    # Cordon  threshold (main.py: TRUST_CORDON_BELOW)
+TRUST_UNCORDON   = 60.0    # Uncordon threshold (main.py: TRUST_UNCORDON_ABOVE)
+GRACE_PERIOD_TICKS = 5     # First N inferences per group — no trust penalty
 
 # AE feature weights (must match train_lstm.py)
 AE_WEIGHTS = torch.tensor([
     5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 2.0,   # cpu/mem boosted
-    5.0, 5.0,                          # exec counts
-    10.0, 10.0,                        # security
+    20.0, 20.0,                          # exec counts (boosted)
+    50.0, 10.0,                        # security (tmp_exec massively boosted)
     20.0                               # mining_port
 ])
 
@@ -76,25 +77,24 @@ class LSTMAutoencoder(nn.Module):
         self.latent2hidden = nn.Linear(latent_dim, hidden_dim)
         self.decoder_lstm  = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
         self.output_layer  = nn.Linear(hidden_dim, input_dim)
-        if sparse_indices:
-            n_s = len(sparse_indices)
-            self.sparse_branch = nn.Sequential(
-                nn.Linear(n_s, 4), nn.ReLU(), nn.Linear(4, n_s))
 
     def forward(self, x):
-        _, (h_n, _) = self.encoder_lstm(x)
-        latent = self.hidden2latent(h_n[-1])
+        enc_out, _ = self.encoder_lstm(x)
+        context = enc_out.mean(dim=1)  # Mean Pooling
+        latent = self.hidden2latent(context)
         h_dec = self.latent2hidden(latent).unsqueeze(1).repeat(1, x.shape[1], 1)
         dec_out, _ = self.decoder_lstm(h_dec)
         recon = self.output_layer(dec_out)
-        if self.sparse_indices:
-            s_in = x[:, :, self.sparse_indices]
-            recon[:, :, self.sparse_indices] += self.sparse_branch(s_in)
+        
+        # sparse_branch removed
         return recon
 
 
 def flatten_window(seq):
-    """Flatten (SEQ_LEN, features) â†’ (features*4,) using mean/std/min/max."""
+    """Flatten (SEQ_LEN, features) → (features*4,) using mean/std/min/max.
+    Input must already be clipped to [0, 1] (MinMaxScaler training range)
+    to prevent out-of-distribution std/min/max during condition transitions.
+    """
     stats = []
     for i in range(seq.shape[1]):
         col = seq[:, i]
@@ -104,29 +104,44 @@ def flatten_window(seq):
 
 # â”€â”€ Trust Simulator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class TrustSimulator:
-    """Simulates the hybrid trust system for a single node over time."""
+    """Simulates the hybrid trust system for a single (run, node) group.
+    Mirrors HybridTrustTracker + grace period logic in operator/main.py.
+    """
     def __init__(self, name):
         self.name = name
         self.score = TRUST_INITIAL
-        self.history = []  # (timestamp, score, label, ae_flag, rf_flag, rf_label)
+        self.inference_count = 0   # tracks grace period (mirrors NODE_INFERENCE_COUNT)
+        self.history = []  # list of dicts per tick
 
     def update(self, timestamp, label, ae_flags, rf_flags, rf_label="normal"):
-        if ae_flags and rf_flags:
+        self.inference_count += 1
+        in_grace = self.inference_count <= GRACE_PERIOD_TICKS
+
+        if in_grace:
+            # Grace period: log but do NOT penalise trust (mirrors main.py)
+            delta = 0.0
+            reason = f"GRACE ({self.inference_count}/{GRACE_PERIOD_TICKS})"
+        elif ae_flags and rf_flags:
             delta = TRUST_DECAY_BOTH
+            reason = "BOTH"
         elif rf_flags:
             delta = TRUST_DECAY_RF
+            reason = "RF_ONLY"
         elif ae_flags:
             delta = TRUST_DECAY_AE
+            reason = "AE_ONLY"
         else:
             delta = TRUST_REWARD
+            reason = "NORMAL"
 
         self.score = max(0.0, min(TRUST_INITIAL, self.score + delta))
         self.history.append({
             "ts": timestamp, "score": self.score, "label": label,
             "ae": ae_flags, "rf": rf_flags, "rf_label": rf_label,
+            "in_grace": in_grace, "reason": reason,
             "cordoned": self.score < TRUST_CORDON,
         })
-        return self.score
+        return self.score, in_grace
 
 
 # â”€â”€ Main Evaluation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -162,6 +177,11 @@ def main():
     # 2. Load dataset
     print(f"\n  Loading dataset: {DATASET_PATH}")
     df = pd.read_csv(DATASET_PATH)
+    
+    # --- MATCH ONLINE SCOPE ---
+    # The live operator (main.py) explicitly skips the control-plane node (k3s-wk1)
+    # We remove it here so our offline metrics reflect the actual worker-only environment.
+    df = df[df["node"] != "k3s-wk1"]
 
     for col in FEATURES:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -185,6 +205,10 @@ def main():
     fault_detection = {m: defaultdict(lambda: {"detected": 0, "total": 0}) for m in modes}
     cordon_results = {"correct_cordons": 0, "false_cordons": 0,
                       "total_anomaly_windows": 0, "total_normal_windows": 0}
+    # Detection latency: fault_type -> list of window-counts from fault start to first flag
+    # Each entry is an int (ticks) or None (fault episode not detected at all)
+    fault_latency = defaultdict(list)  # fault_type -> [ticks, ...]
+    cordon_latency = defaultdict(list)
 
     groups = df.groupby(["run_id", "node"])
     n_groups = len(groups)
@@ -201,6 +225,12 @@ def main():
 
         trust_sim = TrustSimulator(f"{run_id[:8]}/{node}")
 
+        # Per-group latency tracking state
+        _lat_fault      = None   # active fault type being tracked
+        _lat_start_tick = None   # window index when that fault first appeared
+        _lat_detected   = False  # whether it has been flagged yet this episode
+        _lat_cordoned   = False  # whether it has been cordoned yet this episode
+
         for i in range(n_windows):
             window = vals[i:i+SEQ_LEN]
             win_labels = labels[i:i+SEQ_LEN]
@@ -216,7 +246,7 @@ def main():
 
             is_true_anomaly = (true_label != "normal")
 
-            # Scale
+            # Scale (mirrors preprocess_sequence in main.py)
             seq_scaled = scaler.transform(window)
 
             # --- LSTM AE inference ---
@@ -229,7 +259,11 @@ def main():
             ae_flags = ae_loss > threshold
 
             # --- RF inference ---
-            flat = flatten_window(seq_scaled).reshape(1, -1)
+            # Clip to [0,1] before flattening: MinMaxScaler was fit on normal training
+            # data so live/fault values can exceed the range, producing std/min/max
+            # the RF never trained on.  Mirrors the np.clip fix in main.py run_inference().
+            seq_clipped = np.clip(seq_scaled, 0.0, 1.0)
+            flat = flatten_window(seq_clipped).reshape(1, -1)
             flat = np.nan_to_num(flat, nan=0.0, posinf=1.0, neginf=0.0)
             rf_pred = rf_model.predict(flat)[0]
             rf_flags = (rf_pred != "normal")
@@ -238,42 +272,86 @@ def main():
             if rf_multi is not None:
                 rf_label = rf_multi.predict(flat)[0]
 
-            # --- Update trust (hybrid) ---
-            trust_sim.update(ts, true_label, ae_flags, rf_flags, rf_label)
+            # --- Update trust (hybrid) — mirrors HybridTrustTracker.update() ---
+            _, in_grace = trust_sim.update(ts, true_label, ae_flags, rf_flags, rf_label)
 
-            # --- Accumulate metrics for all 3 modes ---
-            for mode in modes:
-                if mode == "hybrid":
-                    flagged = ae_flags or rf_flags  # OR for detection counting
-                elif mode == "ae_only":
-                    flagged = ae_flags
-                else:  # rf_only
-                    flagged = rf_flags
+            # --- Accumulate metrics for all 3 modes (skip grace period ticks) ---
+            if not in_grace:
+                for mode in modes:
+                    if mode == "hybrid":
+                        flagged = ae_flags or rf_flags
+                    elif mode == "ae_only":
+                        flagged = ae_flags
+                    else:  # rf_only
+                        flagged = rf_flags
 
-                m = total_metrics[mode]
-                if is_true_anomaly and flagged:
-                    m["tp"] += 1
-                elif is_true_anomaly and not flagged:
-                    m["fn"] += 1
-                elif not is_true_anomaly and flagged:
-                    m["fp"] += 1
-                else:
-                    m["tn"] += 1
+                    m = total_metrics[mode]
+                    if is_true_anomaly and flagged:
+                        m["tp"] += 1
+                    elif is_true_anomaly and not flagged:
+                        m["fn"] += 1
+                    elif not is_true_anomaly and flagged:
+                        m["fp"] += 1
+                    else:
+                        m["tn"] += 1
 
-                if is_true_anomaly:
-                    fault_detection[mode][true_label]["total"] += 1
-                    if flagged:
-                        fault_detection[mode][true_label]["detected"] += 1
+                    if is_true_anomaly:
+                        fault_detection[mode][true_label]["total"] += 1
+                        if flagged:
+                            fault_detection[mode][true_label]["detected"] += 1
 
-        # Check if trust dropped below cordon threshold during anomaly windows
+            # --- Detection latency tracking (hybrid only) ---
+            hybrid_flagged = ae_flags or rf_flags
+            if is_true_anomaly:
+                if _lat_fault != true_label:
+                    # A new fault episode started (or fault type switched)
+                    # Close out the previous episode if it was never detected
+                    if _lat_fault is not None:
+                        if not _lat_detected: fault_latency[_lat_fault].append(None)
+                        if not _lat_cordoned: cordon_latency[_lat_fault].append(None)
+                    _lat_fault      = true_label
+                    _lat_start_tick = i
+                    _lat_detected   = False
+                    _lat_cordoned   = False
+
+                if not _lat_detected and hybrid_flagged:
+                    latency_ticks = i - _lat_start_tick
+                    fault_latency[_lat_fault].append(latency_ticks)
+                    _lat_detected = True
+                    
+                if not _lat_cordoned and trust_sim.score < TRUST_CORDON:
+                    cordon_ticks = i - _lat_start_tick
+                    cordon_latency[_lat_fault].append(cordon_ticks)
+                    _lat_cordoned = True
+            else:
+                # Returned to normal — close out any open fault episode
+                if _lat_fault is not None:
+                    if not _lat_detected: fault_latency[_lat_fault].append(None)
+                    if not _lat_cordoned: cordon_latency[_lat_fault].append(None)
+                _lat_fault      = None
+                _lat_start_tick = None
+                _lat_detected   = False
+                _lat_cordoned   = False
+
+        # Check if trust dropped below cordon threshold
+        is_legitimately_cordoned = False
+        
         for entry in trust_sim.history:
+            # Update state machine for hysteresis (simulate K8s node state)
+            if entry["score"] < TRUST_CORDON:
+                if entry["label"] != "normal":
+                    is_legitimately_cordoned = True
+            elif entry["score"] > TRUST_UNCORDON:
+                is_legitimately_cordoned = False
+
             if entry["label"] != "normal":
                 cordon_results["total_anomaly_windows"] += 1
                 if entry["cordoned"]:
                     cordon_results["correct_cordons"] += 1
             else:
                 cordon_results["total_normal_windows"] += 1
-                if entry["cordoned"]:
+                # To be a false cordon, the node must be cordoned AND not currently recovering from a legit anomaly
+                if entry["cordoned"] and not is_legitimately_cordoned:
                     cordon_results["false_cordons"] += 1
 
         processed += 1
@@ -355,19 +433,60 @@ def main():
     if c['total_normal_windows'] > 0:
         print(f"  False cordon rate                       : {c['false_cordons']/c['total_normal_windows']*100:.2f}%")
 
+    # Detection latency per fault type
+    print(f"\n{'='*95}")
+    print(f"  LATENCY: Detection (Model Flags) vs Remediation (Operator Cordons) [window-ticks × 10s = seconds]")
+    print(f"{'='*95}")
+    print(f"  {'Fault':<35s} | {'Episodes':>8s} | {'Detect(Mean)':>12s} | {'Cordon(Mean)':>12s} | {'Delta':>8s}")
+    print(f"  {'-'*95}")
+    latency_summary = {}
+    for fault in sorted(fault_latency.keys()):
+        episodes = fault_latency[fault]
+        cordon_eps = cordon_latency[fault]
+        
+        detected = [t for t in episodes if t is not None]
+        cordoned = [t for t in cordon_eps if t is not None]
+        
+        missed = len(episodes) - len(detected)
+        
+        detect_mean = np.mean(detected) * 10 if detected else None
+        cordon_mean = np.mean(cordoned) * 10 if cordoned else None
+        
+        det_str = f"{detect_mean:.0f}s" if detect_mean is not None else "N/A"
+        cor_str = f"{cordon_mean:.0f}s" if cordon_mean is not None else "N/A"
+        
+        if detect_mean is not None and cordon_mean is not None:
+            delta_str = f"+{cordon_mean - detect_mean:.0f}s"
+        else:
+            delta_str = "N/A"
+            
+        print(f"  {fault:<35s} | {len(episodes):>8d} | {det_str:>12s} | {cor_str:>12s} | {delta_str:>8s}")
+        
+        latency_summary[fault] = {
+            "episodes": len(episodes), "detected": len(detected), "missed": missed,
+            "detect_mean_s": float(detect_mean) if detect_mean is not None else None,
+            "cordon_mean_s": float(cordon_mean) if cordon_mean is not None else None,
+        }
+
     # Save results
     save_results = {
         "comparison": {m: {k: float(v) for k, v in results[m].items()} for m in modes},
         "per_fault_hybrid": {
-            f: {"detected": d["detected"], "total": d["total"],
-                "rate": d["detected"]/d["total"] if d["total"] > 0 else 0}
+            f: {"detected": int(d["detected"]), "total": int(d["total"]),
+                "rate": float(d["detected"]/d["total"]) if d["total"] > 0 else 0.0}
             for f, d in fault_detection["hybrid"].items()
         },
-        "cordon_results": cordon_results,
+        "cordon_results": {k: int(v) for k, v in cordon_results.items()},
+        "detection_latency": latency_summary,
         "config": {
-            "trust_decay_rf": TRUST_DECAY_RF, "trust_decay_ae": TRUST_DECAY_AE,
-            "trust_decay_both": TRUST_DECAY_BOTH, "trust_reward": TRUST_REWARD,
-            "trust_cordon_threshold": TRUST_CORDON, "ae_threshold": threshold,
+            "trust_decay_rf_only": TRUST_DECAY_RF,
+            "trust_decay_ae_only": TRUST_DECAY_AE,
+            "trust_decay_both": TRUST_DECAY_BOTH,
+            "trust_reward_normal": TRUST_REWARD,
+            "trust_cordon_below": TRUST_CORDON,
+            "trust_uncordon_above": TRUST_UNCORDON,
+            "grace_period_ticks": GRACE_PERIOD_TICKS,
+            "ae_threshold": threshold,
         }
     }
     with open(RESULTS_PATH, "w") as f:

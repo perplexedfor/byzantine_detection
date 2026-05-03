@@ -1,4 +1,4 @@
-﻿"""
+"""
 ml/preprocess.py
 ----------------
 Loads the k3s final_labeled_dataset.csv, cleans it, normalizes features,
@@ -36,10 +36,13 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 
 # ── Configuration ────────────────────────────────────────────────────────────
-# Path to the k3s labeled dataset (relative to v2/)
-RAW_FILE     = os.path.join("..","..", "k3s-monitoring-setup", "final_labeled_dataset.csv")
-OUT_DIR      = "dataset/processed"
-SCALER_PATH  = "ml/scaler.pkl"
+# Resolve paths relative to this script's location so they work regardless of CWD
+_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
+_V2_DIR      = os.path.dirname(_SCRIPT_DIR)          # infra-proj/v2
+_ROOT_DIR    = os.path.dirname(_V2_DIR)               # infra-proj
+RAW_FILE     = os.path.join(_ROOT_DIR, "k3s-monitoring-setup", "final_labeled_dataset.csv")
+OUT_DIR      = os.path.join(_V2_DIR, "dataset", "processed")
+SCALER_PATH  = os.path.join(_V2_DIR, "ml", "scaler.pkl")
 
 FEATURES = [
     "avg_cpu", "avg_mem",
@@ -90,6 +93,7 @@ def load_dataset(path):
     print(f"  Labels: {dict(df['label'].value_counts())}")
     print(f"  Nodes:  {dict(df['node'].value_counts())}")
     print(f"  Runs:   {df['run_id'].nunique()}")
+
     return df
 
 
@@ -199,7 +203,7 @@ def main():
     for col in BYTE_COLS:
         df[col] = np.log1p(df[col])
     for col in BYTE_COLS:
-        print(f"  {col}: max → {df[col].max():.4f}")
+        print(f"  {col}: max -> {df[col].max():.4f}")
 
     print("\n" + "=" * 60)
     print("STEP 3  Detecting dead eBPF sensors")

@@ -26,7 +26,7 @@ THRESHOLD_PATH  = "ml/threshold.txt"
 
 SEQUENCE_LENGTH = 30
 BATCH_SIZE      = 64
-EPOCHS          = 100   
+EPOCHS          = 250   
 LEARNING_RATE   = 0.001
 HIDDEN_SIZE     = 64
 LATENT_DIM      = 8
@@ -39,9 +39,9 @@ FEATURE_WEIGHTS = torch.tensor([
     1.0,   # net_internal_bytes_in
     1.0,   # net_internal_bytes_out
     2.0,   # net_drop_rate
-    5.0,   # exec_count
-    5.0,   # unique_process_count
-    10.0,  # tmp_exec_count
+    20.0,  # exec_count (boosted for security_high_process)
+    20.0,  # unique_process_count (boosted for security_high_process)
+    50.0,  # tmp_exec_count (massively boosted for security_tmp_exec)
     10.0,  # outbound_connect_count
     20.0,  # mining_port_count
 ])
@@ -96,23 +96,15 @@ class LSTMAutoencoder(nn.Module):
         self.decoder_lstm  = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
         self.output_layer  = nn.Linear(hidden_dim, input_dim)
         
-        if sparse_indices:
-            n_sparse = len(sparse_indices)
-            self.sparse_branch = nn.Sequential(
-                nn.Linear(n_sparse, 4),
-                nn.ReLU(),
-                nn.Linear(4, n_sparse)
-            )
     def forward(self, x):
-        _, (h_n, _) = self.encoder_lstm(x)
-        latent  = self.hidden2latent(h_n[-1])
+        enc_out, _ = self.encoder_lstm(x)
+        context = enc_out.mean(dim=1)  # Mean Pooling
+        latent  = self.hidden2latent(context)
         h_dec   = self.latent2hidden(latent).unsqueeze(1).repeat(1, x.shape[1], 1)
         dec_out, _ = self.decoder_lstm(h_dec)
         recon = self.output_layer(dec_out)
         
-        if self.sparse_indices:
-            sparse_in = x[:, :, self.sparse_indices]
-            recon[:,:,self.sparse_indices] += self.sparse_branch(sparse_in)
+        # sparse_branch removed to force bottlenecking
         return recon    
 
 # ——————————————————————————————————————————————————————————————————————————————

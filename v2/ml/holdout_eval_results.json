@@ -1,0 +1,173 @@
+{
+  "holdout_fault": "security_suspicious_network",
+  "comparison": {
+    "ae_only": {
+      "prec": 0.988569753810082,
+      "rec": 0.4018825211485762,
+      "f1": 0.5714527742482,
+      "fpr": 0.0034999551287804003,
+      "tp": 3373.0,
+      "fp": 39.0,
+      "tn": 11104.0,
+      "fn": 5020.0
+    },
+    "rf_holdout": {
+      "prec": 0.9960957834461218,
+      "rec": 0.9119504348862147,
+      "f1": 0.9521676929775456,
+      "fpr": 0.0026922731759849235,
+      "tp": 7654.0,
+      "fp": 30.0,
+      "tn": 11113.0,
+      "fn": 739.0
+    },
+    "hybrid_holdout": {
+      "prec": 0.992134559535334,
+      "rec": 0.9768854998212796,
+      "f1": 0.9844509815693102,
+      "fpr": 0.005833258547967334,
+      "tp": 8199.0,
+      "fp": 65.0,
+      "tn": 11078.0,
+      "fn": 194.0
+    }
+  },
+  "per_fault": {
+    "cpu_stress": {
+      "ae_only": {
+        "detected": 9,
+        "total": 638,
+        "rate": 0.014106583072100314
+      },
+      "rf_holdout": {
+        "detected": 633,
+        "total": 638,
+        "rate": 0.9921630094043887
+      },
+      "hybrid_holdout": {
+        "detected": 633,
+        "total": 638,
+        "rate": 0.9921630094043887
+      }
+    },
+    "crash_loop": {
+      "ae_only": {
+        "detected": 44,
+        "total": 1088,
+        "rate": 0.04044117647058824
+      },
+      "rf_holdout": {
+        "detected": 1085,
+        "total": 1088,
+        "rate": 0.9972426470588235
+      },
+      "hybrid_holdout": {
+        "detected": 1085,
+        "total": 1088,
+        "rate": 0.9972426470588235
+      }
+    },
+    "edge_network_flap": {
+      "ae_only": {
+        "detected": 204,
+        "total": 1090,
+        "rate": 0.1871559633027523
+      },
+      "rf_holdout": {
+        "detected": 1051,
+        "total": 1090,
+        "rate": 0.9642201834862385
+      },
+      "hybrid_holdout": {
+        "detected": 1051,
+        "total": 1090,
+        "rate": 0.9642201834862385
+      }
+    },
+    "memory_leak": {
+      "ae_only": {
+        "detected": 28,
+        "total": 868,
+        "rate": 0.03225806451612903
+      },
+      "rf_holdout": {
+        "detected": 853,
+        "total": 868,
+        "rate": 0.9827188940092166
+      },
+      "hybrid_holdout": {
+        "detected": 853,
+        "total": 868,
+        "rate": 0.9827188940092166
+      }
+    },
+    "network_chaos": {
+      "ae_only": {
+        "detected": 149,
+        "total": 1140,
+        "rate": 0.1307017543859649
+      },
+      "rf_holdout": {
+        "detected": 1092,
+        "total": 1140,
+        "rate": 0.9578947368421052
+      },
+      "hybrid_holdout": {
+        "detected": 1094,
+        "total": 1140,
+        "rate": 0.9596491228070175
+      }
+    },
+    "security_high_process": {
+      "ae_only": {
+        "detected": 1045,
+        "total": 1337,
+        "rate": 0.7816005983545251
+      },
+      "rf_holdout": {
+        "detected": 1335,
+        "total": 1337,
+        "rate": 0.9985041136873598
+      },
+      "hybrid_holdout": {
+        "detected": 1335,
+        "total": 1337,
+        "rate": 0.9985041136873598
+      }
+    },
+    "security_suspicious_network": {
+      "ae_only": {
+        "detected": 1196,
+        "total": 1327,
+        "rate": 0.9012810851544838
+      },
+      "rf_holdout": {
+        "detected": 701,
+        "total": 1327,
+        "rate": 0.5282592313489073
+      },
+      "hybrid_holdout": {
+        "detected": 1244,
+        "total": 1327,
+        "rate": 0.9374529012810852
+      }
+    },
+    "security_tmp_exec": {
+      "ae_only": {
+        "detected": 698,
+        "total": 905,
+        "rate": 0.7712707182320442
+      },
+      "rf_holdout": {
+        "detected": 904,
+        "total": 905,
+        "rate": 0.9988950276243094
+      },
+      "hybrid_holdout": {
+        "detected": 904,
+        "total": 905,
+        "rate": 0.9988950276243094
+      }
+    }
+  }
+}
